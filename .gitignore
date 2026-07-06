@@ -1,0 +1,12 @@
+data/
+corpus/
+inbox/
+__pycache__/
+*.pyc
+.env
+*.sqlite3
+
+# 원본 자료 — 계정 정보 탭(자격증명) 포함이라 깃 반입 금지 (CLAUDE.md 불변 2)
+# 대신 계정 정보 탭을 제거한 "_계정정보제거" 사본만 커밋한다
+1부서 카페 포스팅 시트.xlsx
+fastpoten-content-assets.zip
