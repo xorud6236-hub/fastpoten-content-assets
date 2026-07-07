@@ -74,8 +74,11 @@ def classify_failure(page_text):
 # HTML 파서 — SmartEditor 3(.se-main-container) 실제 구조 대상.
 #   본문은 div.article_viewer > div.se-main-container 안의 se-component 블록이
 #   위→아래로 쌓인 구조다(텍스트=se-text, 이미지=se-image, 표=se-table …).
-#   블록을 문서 순서대로 훑어: 텍스트 컴포넌트=한 문단, 이미지 컴포넌트=이미지 1장,
-#   원본 흐름(이미지↔텍스트 교차)과 이미지 위치(nearby_paragraph_no)를 보존한다.
+#   ★ 문단 경계 = 이미지. 카페 글은 "이미지-텍스트-이미지-텍스트" 흐름이라
+#     이미지가 사실상 문단 구분자다. 그래서 블록을 문서 순서대로 훑되:
+#     텍스트 계열 컴포넌트는 버퍼에 계속 누적하고, 이미지를 만나면 그때까지
+#     누적된 텍스트를 "한 문단"으로 끊는다(se-text 컴포넌트 개수로 쪼개지 않음 → 과분할 방지).
+#     이미지 위치(nearby_paragraph_no)와 이미지↔텍스트 원본 흐름은 그대로 보존한다.
 # simplified: 라이브 네이버 DOM 변경 시 셀렉터(se-* class 이름) 튜닝 필요할 수 있음(리뷰 주목).
 # ---------------------------------------------------------------------------
 
@@ -150,19 +153,25 @@ def _slice_container(html):
 
 
 def parse_body_html(body_html):
-    """se-main-container 서브트리 → (lines, images).
+    """se-main-container 서브트리 → (lines, images). ★ 문단 경계 = 이미지.
 
     se-component 블록을 문서 순서대로 훑는다:
-      - 텍스트 계열 컴포넌트 = 한 문단(내부 여러 se-text-paragraph = 소프트 줄바꿈 → 공백으로 이어붙임).
-      - 이미지 컴포넌트 = 이미지 1장(그룹이면 여러 장). src는 고해상 우선(data-lazy-src → src).
-        nearby_paragraph_no = 그 시점까지 나온 문단 수(1-based) → 이미지↔텍스트 원본 순서 보존.
+      - 텍스트 계열 컴포넌트(se-text/소제목/인용/표) = 문단 버퍼에 계속 누적
+        (내부 여러 se-text-paragraph = 소프트 줄바꿈 → 공백으로 이어붙임).
+      - 이미지 컴포넌트(se-image)를 만나면: (1) 누적된 텍스트 버퍼를 한 문단으로 flush,
+        (2) 이미지 1장 기록(그룹이면 여러 장, src는 고해상 우선 data-lazy-src → src).
+        nearby_paragraph_no = 그때까지 flush된 문단 수(1-based) → 이미지↔텍스트 원본 순서 보존.
+      - 끝에 남은 텍스트 버퍼도 마지막 문단으로 flush.
+      - 두 이미지 사이의 텍스트 컴포넌트들은 "한 문단"으로 병합(과분할 방지).
+      - 연속 이미지(사이 텍스트 없음)는 빈 문단을 만들지 않음(각 이미지만 기록).
+      - 이미지 0개 글 → 전체 텍스트가 1문단(사용자 규칙상 수용).
       - 맨 앞 '카페 운영진 허가를 받아 작성' 류 고지 문구는 본문이 아니므로 첫 블록이면 제거.
     최종 lines는 문단 사이를 정확히 빈 줄 1개(\\n\\n)로 구분 →
       intake.split_paragraphs(무수정)가 블록 1:1로 문단화한다.
-    자체검증(블록 순서·문단 경계·고지 제거): tests/test_cafe_extract.py 케이스가 깨지면 실패.
+    자체검증(문단 경계=이미지·병합·고지 제거): tests/test_cafe_extract.py 케이스가 깨지면 실패.
     """
     # 1) se-component 블록을 순서대로 (종류, 텍스트|이미지목록)로 파싱.
-    blocks = []  # ("text", 문단문자열) | ("image", src)
+    blocks = []  # ("text", 컴포넌트문자열) | ("image", src)
     for cls, chunk in _iter_components(body_html):
         if "se-image" in cls:                       # 이미지 컴포넌트(그룹이면 여러 img)
             for src in _imgs_in(chunk):
@@ -173,21 +182,32 @@ def parse_body_html(body_html):
                 blocks.append(("text", txt))
         # 그 외 컴포넌트(동영상·링크카드·스티커 등)는 본문 산문 아님 → 건너뜀(보수)
 
-    # 2) 맨 앞 고지 문구 블록 제거(첫 텍스트 블록만, 보수적으로).
+    # 2) 맨 앞 고지 문구 블록 제거(첫 텍스트 블록만, 보수적으로 — 누적 시작 전에).
     if blocks and blocks[0][0] == "text" and _is_permission_notice(blocks[0][1]):
         blocks = blocks[1:]
 
-    # 3) 순서 유지하며 문단(lines)·이미지(nearby) emit.
+    # 3) 순서 유지하며 문단(lines)·이미지(nearby) emit — 이미지가 문단 경계.
     lines, images = [], []
     para_count = 0
+    buf = []  # 아직 flush 안 된 텍스트 컴포넌트들(이미지 경계/끝에서 한 문단으로 병합)
+
+    def flush():
+        nonlocal para_count
+        if not buf:                  # 연속 이미지·맨앞 이미지 → 빈 문단 만들지 않음
+            return
+        if lines:
+            lines.append("")         # 문단 사이 빈 줄 1개
+        lines.append(" ".join(buf))
+        buf.clear()
+        para_count += 1
+
     for kind, val in blocks:
         if kind == "text":
-            para_count += 1
-            if lines:
-                lines.append("")     # 문단 사이 빈 줄 1개
-            lines.append(val)
-        else:                        # image
+            buf.append(val)          # 이미지 만날 때까지 계속 누적
+        else:                        # image = 문단 경계
+            flush()                  # 그때까지 누적 텍스트를 한 문단으로
             images.append({"src": val, "nearby_paragraph_no": max(1, para_count)})
+    flush()                          # 끝에 남은 텍스트 버퍼 = 마지막 문단
     return lines, images
 
 

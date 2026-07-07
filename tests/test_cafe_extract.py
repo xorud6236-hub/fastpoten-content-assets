@@ -69,6 +69,23 @@ class TestParser(unittest.TestCase):
         self.assertNotIn("허가를 받아 작성", joined)
         self.assertTrue(self.parsed["lines"][0].startswith("안녕하세요"))
 
+    def test_text_between_images_merged_into_one_paragraph(self):
+        # ★ 문단 경계 = 이미지. 두 이미지 사이의 se-text 컴포넌트 여러 개가 한 문단으로 병합.
+        #   텍스트 구간 3개(이미지 2개 사이) → 문단 3개(컴포넌트 개수만큼 쪼개지지 않음).
+        paras = im.split_paragraphs(im.clean_body("\n".join(self.parsed["lines"])))
+        self.assertEqual(len(paras), 3)
+        # 구간1: 컴포넌트 2개가 같은 문단
+        self.assertIn("짚어드릴게요", paras[0])
+        self.assertIn("핵심만 정리", paras[0])
+        # 구간2: 컴포넌트 2개 + 내부 소프트 줄바꿈이 모두 같은 문단
+        self.assertIn("학사학위", paras[1])
+        self.assertIn("이건 꼭 확인", paras[1])
+        self.assertIn("민지쌤", paras[1])
+        self.assertIn("010-1234-5678", paras[1])
+        # 구간3: 컴포넌트 2개가 같은 문단
+        self.assertIn("정리하면", paras[2])
+        self.assertIn("감사합니다", paras[2])
+
 
 # --- se-component 블록 헬퍼(실제 SmartEditor 3 구조 모사) ---
 def _text_comp(*paragraphs):
@@ -92,22 +109,28 @@ def _container(*blocks):
 
 
 class TestBlockParagraphs(unittest.TestCase):
-    """se-component 블록 파싱: 텍스트 컴포넌트=1문단(과분할 없음), 블록 순서·이미지 위치 보존."""
+    """★ 문단 경계 = 이미지. 두 이미지 사이 텍스트 컴포넌트들을 한 문단으로 병합(과분할 방지),
+    블록 순서·이미지 위치 보존, 엣지(이미지 0개·연속 이미지) 동작."""
 
-    def test_component_is_one_paragraph(self):
-        # 한 컴포넌트 안 여러 se-text-paragraph(소프트 줄바꿈)는 같은 문단, 컴포넌트마다 다른 문단.
+    def test_images_are_paragraph_boundaries(self):
+        # 텍스트 구간마다 se-text 컴포넌트 여러 개 → 이미지 사이 컴포넌트들이 한 문단으로 병합.
         body = _container(
-            _text_comp("문단1 첫째 줄", "문단1 둘째 줄", "문단1 셋째 줄"),
-            _text_comp("문단2 한 줄"),
-            _text_comp("문단3 한 줄"),
+            _text_comp("A 첫째 컴포넌트"),
+            _text_comp("A 둘째 컴포넌트"),
+            _img_comp("https://ex.com/a.jpg"),
+            _text_comp("B 첫째 컴포넌트"),
+            _text_comp("B 둘째 컴포넌트"),
+            _img_comp("https://ex.com/b.jpg"),
+            _text_comp("C 컴포넌트"),
         )
         parsed = ex.parse_article_html(body)
         paras = im.split_paragraphs(im.clean_body("\n".join(parsed["lines"])))
-        self.assertEqual(len(paras), 3)
-        self.assertIn("문단1 첫째 줄", paras[0])
-        self.assertIn("문단1 셋째 줄", paras[0])   # 같은 컴포넌트 → 같은 문단
-        self.assertIn("문단2", paras[1])
-        self.assertIn("문단3", paras[2])
+        self.assertEqual(len(paras), 3)                 # 텍스트 구간 3개 = 문단 3개
+        self.assertIn("A 첫째 컴포넌트", paras[0])
+        self.assertIn("A 둘째 컴포넌트", paras[0])        # 같은 구간 다른 컴포넌트 → 같은 문단
+        self.assertIn("B 첫째 컴포넌트", paras[1])
+        self.assertIn("B 둘째 컴포넌트", paras[1])        # 병합
+        self.assertIn("C 컴포넌트", paras[2])
 
     def test_block_order_preserved_with_nearby(self):
         # 이미지↔텍스트 교차 순서·이미지 위치·고해상 우선 보존
@@ -128,27 +151,62 @@ class TestBlockParagraphs(unittest.TestCase):
         self.assertEqual(imgs[0]["nearby_paragraph_no"], 1)          # 문단A 뒤
         self.assertEqual(imgs[1]["nearby_paragraph_no"], 2)          # 문단B 뒤
 
+    def test_zero_images_is_one_paragraph(self):
+        # 이미지 0개 글 → 전체 텍스트가 1문단(사용자 규칙상 수용).
+        body = _container(
+            _text_comp("첫 컴포넌트"),
+            _text_comp("둘째 컴포넌트"),
+            _text_comp("셋째 컴포넌트"),
+        )
+        parsed = ex.parse_article_html(body)
+        self.assertEqual(len(parsed["images"]), 0)
+        paras = im.split_paragraphs(im.clean_body("\n".join(parsed["lines"])))
+        self.assertEqual(len(paras), 1)
+        self.assertIn("첫 컴포넌트", paras[0])
+        self.assertIn("셋째 컴포넌트", paras[0])
+
+    def test_consecutive_images_make_no_empty_paragraph(self):
+        # 연속 이미지(사이 텍스트 없음) → 빈 문단 만들지 않음. 둘 다 앞 문단을 가리킴.
+        body = _container(
+            _text_comp("문단 A"),
+            _img_comp("https://ex.com/1.jpg"),
+            _img_comp("https://ex.com/2.jpg"),
+            _text_comp("문단 B"),
+        )
+        parsed = ex.parse_article_html(body)
+        paras = im.split_paragraphs(im.clean_body("\n".join(parsed["lines"])))
+        self.assertEqual(len(paras), 2)                 # A, B — 사이 빈 문단 없음
+        imgs = parsed["images"]
+        self.assertEqual(len(imgs), 2)
+        self.assertEqual(imgs[0]["nearby_paragraph_no"], 1)  # 둘 다 문단A 뒤
+        self.assertEqual(imgs[1]["nearby_paragraph_no"], 1)
+
     def test_leading_permission_notice_removed(self):
         body = _container(
             _text_comp("이 글은 카페 운영진의 허가를 받아 작성되었습니다."),
             _text_comp("본문 첫 문단입니다."),
+            _img_comp("https://ex.com/x.jpg"),
             _text_comp("본문 둘째 문단입니다."),
         )
         parsed = ex.parse_article_html(body)
         joined = "\n".join(parsed["lines"])
         self.assertNotIn("허가를 받아 작성", joined)
         paras = im.split_paragraphs(im.clean_body(joined))
-        self.assertEqual(len(paras), 2)
+        self.assertEqual(len(paras), 2)                 # 이미지 경계로 첫/둘째 문단 분리
         self.assertIn("본문 첫 문단", paras[0])
+        self.assertIn("본문 둘째 문단", paras[1])
 
     def test_notice_removal_is_conservative(self):
         # 첫 블록이 아니면 고지어를 포함해도 제거하지 않음(본문 오제거 방지).
         body = _container(
             _text_comp("본문 첫 문단입니다."),
+            _img_comp("https://ex.com/x.jpg"),
             _text_comp("이 글은 카페 운영진의 허가를 받아 작성되었습니다."),
         )
         parsed = ex.parse_article_html(body)
-        paras = im.split_paragraphs(im.clean_body("\n".join(parsed["lines"])))
+        joined = "\n".join(parsed["lines"])
+        self.assertIn("허가를 받아 작성", joined)         # 첫 블록 아님 → 유지
+        paras = im.split_paragraphs(im.clean_body(joined))
         self.assertEqual(len(paras), 2)
 
 

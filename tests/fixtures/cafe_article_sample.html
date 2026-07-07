@@ -1,7 +1,9 @@
 <!-- 테스트용 카페 글 픽스처 — 실제 SmartEditor 3(네이버 카페) 구조 모사.
      실제 본문은 div.article_viewer > div.se-main-container 안에 se-component 블록이
      위→아래 순서로 쌓인다(텍스트=se-text, 이미지=se-image). 라이브 접속 없이 파서 검증.
-     본문에 전화번호·OO쌤 포함 → 마스킹 파이프라인이 가리는지 확인(불변 1).
+     ★ 흐름: 텍스트-이미지-텍스트-이미지-텍스트. 각 텍스트 구간에 se-text 컴포넌트를
+        여러 개 넣어 "두 이미지 사이 여러 컴포넌트 = 한 문단으로 병합"을 검증(과분할 방지).
+     본문에 전화번호·OO쌤(민지쌤) 포함 → 마스킹 파이프라인이 가리는지 확인(불변 1).
      맨 앞 '카페 운영진 허가' 고지 문구 = 본문 아님(제거 대상).
      se-main-container 바깥에 댓글·프로필·관련글 UI = 구조적으로 제외돼야 함. -->
 <html>
@@ -33,12 +35,21 @@
         </div>
       </div>
 
-      <!-- 블록1: 텍스트 문단1 -->
+      <!-- 텍스트 구간1: se-text 컴포넌트 2개 → 한 문단으로 병합되어야 함 -->
       <div class="se-component se-text se-l-default">
         <div class="se-component-content">
           <div class="se-section se-section-text se-l-default">
             <div class="se-module se-module-text">
               <p class="se-text-paragraph"><span class="se-fs16">안녕하세요! 오늘은 임상심리사 2급 응시자격을 짚어드릴게요.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph"><span>이 글에서 핵심만 정리해볼게요.</span></p>
             </div>
           </div>
         </div>
@@ -58,12 +69,22 @@
         </div>
       </div>
 
-      <!-- 블록3: 텍스트 문단2 (한 컴포넌트 내 여러 se-text-paragraph = 소프트 줄바꿈 → 한 문단) -->
+      <!-- 텍스트 구간2: se-text 컴포넌트 2개(첫째는 내부 소프트 줄바꿈 2줄, 둘째는 PII 포함)
+           → 컴포넌트 2개가 한 문단으로 병합되고, 내부 소프트 줄바꿈도 같은 문단 -->
       <div class="se-component se-text se-l-default">
         <div class="se-component-content">
           <div class="se-section se-section-text se-l-default">
             <div class="se-module se-module-text">
               <p class="se-text-paragraph"><span>응시자격은 학사학위와 1년 수련이 필요합니다.</span></p>
+              <p class="se-text-paragraph"><span>이건 꼭 확인하세요.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
               <p class="se-text-paragraph"><span>궁금하면 담당 민지쌤에게 문의주세요.</span></p>
               <p class="se-text-paragraph"><span>전화 010-1234-5678 로 연락 가능합니다.</span></p>
             </div>
@@ -85,12 +106,21 @@
         </div>
       </div>
 
-      <!-- 블록5: 텍스트 문단3 -->
+      <!-- 텍스트 구간3: se-text 컴포넌트 2개 → 한 문단으로 병합 -->
       <div class="se-component se-text se-l-default">
         <div class="se-component-content">
           <div class="se-section se-section-text se-l-default">
             <div class="se-module se-module-text">
               <p class="se-text-paragraph"><span>정리하면, 자격 요건을 먼저 확인하는 게 중요합니다.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph"><span>끝까지 읽어주셔서 감사합니다.</span></p>
             </div>
           </div>
         </div>
