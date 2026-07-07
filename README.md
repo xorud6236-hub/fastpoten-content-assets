@@ -1,27 +1,16 @@
-# fastpoten-content-assets — 콘텐츠 자산화 시스템
+# fastpoten-brand-factory — 브랜드 자산 팩토리
 
-부서 카페 글 약 11,000건을 정리해 "콘텐츠 자산 창고"로 만드는 프로젝트.
-(원고·이미지 AI 생성은 다음 단계 — 이 저장소는 창고 만들기까지)
+검증된 콘텐츠 1만여 건을 자산창고로 정리하고, 자사 채널(홈페이지 SEO·워드프레스·인스타)에 콘텐츠를 자동 생산·발행·개선하는 시스템. (에이전트 9종 내장 — .claude/agents/)
 
-## 지금 상태
-기획 완료(docs/ 참조). 코드는 아직 없음. **다음 작업 = CA-1(뼈대 만들기)**.
-
-## 처음 올리기 (회사에서, 5분)
-1. github.com 로그인 → New repository → 이름 `fastpoten-content-assets` → **Private** → Create
-2. "uploading an existing file" 링크 클릭 → 이 폴더 안 파일 전부 드래그 → Commit
-   (또는 GitHub Desktop 사용 시: Add local repository → 이 폴더 → Publish)
+## 올리기 (회사, 5분)
+github.com → New repository → `fastpoten-brand-factory` → **Private** → 이 폴더 파일 전부 업로드(숨김폴더 .claude 포함 주의 — GitHub Desktop 사용 권장) → Commit
 
 ## 집에서 이어가기
-1. 집 PC에서 저장소 내려받기(clone) — GitHub Desktop이면 Clone 버튼
-2. 그 폴더에서 **클로드 코드 실행**
-3. 첫 마디: **"CLAUDE.md 읽고 CA-1부터 진행해줘"**
-   → 클로드 코드가 기획서를 읽고 planner→implementer→reviewer로 알아서 진행하며, 결정이 필요한 것만 쉬운 말로 물어봄
+clone → 폴더에서 클로드 코드 실행 → 첫 마디:
+**"CLAUDE.md 읽고 시작하자. CA-1부터 갈지 CB-1(카드뉴스 시제품)부터 갈지 제안해줘"**
 
-## 폴더 안내
-- `docs/` 기획서(서비스 v9 = 무엇을, 개발 v1 = 어떻게)
-- `CLAUDE.md` 클로드 코드가 매번 읽는 규칙서
-- `BACKLOG.md` 나중에 할 일 목록
-- `src/ data/ corpus/ inbox/` 는 작업이 시작되면 생김 (data·corpus는 깃허브에 안 올라감)
+## 문서 지도
+CLAUDE.md(헌장·불변·진행지점) / docs/서비스기획서-v9-자산창고.md(0층 설계) / docs/개발기획서-v2.md(전체 트랙) / DECISION_LOG·FEEDBACK_LOG / BACKLOG.md
 
-## 절대 규칙 한 줄 요약
-전화번호·직원 호칭은 자동으로 가려진다 / 계정 비밀번호는 절대 안 들어간다 / 순위·조회수는 참고일 뿐 성적표가 아니다.
+## 절대 규칙 요약
+개인정보·직원호칭 자동 마스킹 / 계정 비밀번호 미반입 / 카페 순위·조회수는 참고신호(자사채널 실측만 성과) / 발행은 승인 후 / 팩트는 룰북에서만.
