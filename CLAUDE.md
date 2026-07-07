@@ -64,6 +64,9 @@
 - [x] **CA-2 카페 엑셀 적재(완료, 2026-07-07)**: `src/ingest_excel.py` — posts 10,748 + 참고신호 10,115 + staff 81 (URL 11,821셀 100% 일치) — 노트 docs/notes/CA-2.md
 - [x] **CB-1 카드뉴스 조건카드 시제품(완료, 2026-07-07)**: `templates/` + `src/cardnews.py` + 샘플 3장. **판정: 방향 채택, 퀄리티 고도화 필요**(FEEDBACK_LOG) — 노트 docs/notes/CB-1.md
 - [x] **CA-3 수동 투입 파이프라인(완료, 2026-07-07)**: `src/intake_manual.py` + `src/masking.py`. 합성 샘플(임상심리사2급) 시연 — 문단7·이미지6·마스킹100%. **판정: 실제 글로 재검증 예정**(FEEDBACK_LOG) — 노트 docs/notes/CA-3.md
+- [x] **카페 추출기 1차(완료 2026-07-07, 라이브 검증+눈검수 반영)**: `src/extract_cafe.py` + `tests/test_cafe_extract.py`(20테스트) — 기존 intake 재사용 앞단. 데이터손실 가드(CA-2 날짜/라벨 보존). **라이브 성공**: post_id=21512 문단8·이미지6·조회수456(참고신호)·마스킹2, 누출0. 눈검수 3버그 수정: 문단 과분할(빈줄 정규화)·이미지 과다(스코프 truncate+deny필터)·원문대조. split_paragraphs 무수정(수동샘플 규칙 충돌). 계획 docs/plans/20260707-cafe-extractor-web-viewer.md.
+- [x] **웹 뷰어 2차(완료 2026-07-07, 품질확인용 읽기전용, 그린필드 씨앗)**: `src/viewer.py`(표준 http.server) + `templates/tokens.css`(색 분리) + `tests/test_viewer.py`(불변1 회귀). **상세=좌우 대조**(왼:개인정보만 가린 원문 흐름 / 오:문단·역할 정리결과). 켜기: `python src/viewer.py` → http://localhost:8765/. 설계 v2 docs/plans/20260707-cafe-extractor-web-viewer-design-v2.md.
+- [ ] **다음: 사용자 최종 눈검수(좌우 대조) → 통과 시 10~20건 확대**. 확대 전 결정: 가공 전 원문(raw_text)에 개인정보 대량 축적 허용 범위(reviewer 지적). 별도 과제 후보: 역할 태깅 규칙 고도화·disclaimer 처리(FEEDBACK_LOG).
 - [ ] **다음 작업 — 브리프: docs/plans/20260707-next-steps-고도화.md**:
   - A. CA-3 실제 글 재검증(사용자가 inbox/에 실제 글 투입 — 템플릿 `examples/intake_sample/_템플릿/`)
   - B. 카드 품질 고도화(트랙 B) — **복귀 시 "브랜드 색/로고 있나요?" 1개만 묻고 착수** → CB-2

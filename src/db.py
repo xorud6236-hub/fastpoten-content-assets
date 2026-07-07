@@ -167,7 +167,7 @@ SCHEMA_STATEMENTS = [
         attempt_no   INTEGER,
         status       TEXT,
         error_detail TEXT,
-        method       TEXT,   -- mobile / browser
+        method       TEXT,   -- 추출 수단(예: playwright, browser, 수동투입)
         attempted_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )""",
 

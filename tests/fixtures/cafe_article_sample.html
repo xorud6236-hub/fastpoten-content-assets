@@ -1,0 +1,114 @@
+<!-- 테스트용 카페 글 픽스처 — 실제 SmartEditor 3(네이버 카페) 구조 모사.
+     실제 본문은 div.article_viewer > div.se-main-container 안에 se-component 블록이
+     위→아래 순서로 쌓인다(텍스트=se-text, 이미지=se-image). 라이브 접속 없이 파서 검증.
+     본문에 전화번호·OO쌤 포함 → 마스킹 파이프라인이 가리는지 확인(불변 1).
+     맨 앞 '카페 운영진 허가' 고지 문구 = 본문 아님(제거 대상).
+     se-main-container 바깥에 댓글·프로필·관련글 UI = 구조적으로 제외돼야 함. -->
+<html>
+<head><title>임상심리사 2급 후기 - 공준모</title></head>
+<body>
+  <!-- 헤더 영역(se-main-container 바깥) — 제목·조회수·작성일은 여기서 뽑는다 -->
+  <div class="ArticleTitle">
+    <h3 class="title_text">임상심리사 2급, 응시자격부터 정확히 알아볼게요</h3>
+  </div>
+  <div class="article_info">
+    <span class="count">조회 1,234</span>
+    <span class="date">2026.01.06.</span>
+  </div>
+
+  <!-- 진짜 본문 -->
+  <div class="article_viewer">
+    <div class="se-main-container">
+
+      <!-- 블록0: 맨 앞 고지 문구(제거 대상) -->
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph se-text-paragraph-align-center">
+                <span class="se-fs13 se-ff-nanumgothic">* 이 글은 카페 운영진의 허가를 받아 작성되었습니다. *</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 블록1: 텍스트 문단1 -->
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph"><span class="se-fs16">안녕하세요! 오늘은 임상심리사 2급 응시자격을 짚어드릴게요.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 블록2: 이미지1 (고해상 data-lazy-src 우선) -->
+      <div class="se-component se-image se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-image">
+            <div class="se-module se-module-image">
+              <a class="se-module-image-link">
+                <img src="https://cafeptthumb.example.com/img1.jpg?type=w80"
+                     data-lazy-src="https://cafeptthumb.example.com/img1.jpg?type=w800" alt="">
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 블록3: 텍스트 문단2 (한 컴포넌트 내 여러 se-text-paragraph = 소프트 줄바꿈 → 한 문단) -->
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph"><span>응시자격은 학사학위와 1년 수련이 필요합니다.</span></p>
+              <p class="se-text-paragraph"><span>궁금하면 담당 민지쌤에게 문의주세요.</span></p>
+              <p class="se-text-paragraph"><span>전화 010-1234-5678 로 연락 가능합니다.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 블록4: 이미지2 -->
+      <div class="se-component se-image se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-image">
+            <div class="se-module se-module-image">
+              <a class="se-module-image-link">
+                <img src="https://cafeptthumb.example.com/img2.jpg?type=w80"
+                     data-lazy-src="https://cafeptthumb.example.com/img2.jpg?type=w800" alt="">
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 블록5: 텍스트 문단3 -->
+      <div class="se-component se-text se-l-default">
+        <div class="se-component-content">
+          <div class="se-section se-section-text se-l-default">
+            <div class="se-module se-module-text">
+              <p class="se-text-paragraph"><span>정리하면, 자격 요건을 먼저 확인하는 게 중요합니다.</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /se-main-container -->
+  </div><!-- /article_viewer -->
+
+  <!-- se-main-container 바깥 UI — 제외돼야 함(본문/이미지에 새면 안 됨) -->
+  <div class="CommentBox">
+    <div class="comment_profile">
+      <img src="https://ssl.pstatic.net/static/cafe/default/cafe_profile.png" alt="프로필">
+    </div>
+    <p class="se-text-paragraph"><span>댓글 내용입니다 — 본문 아님</span></p>
+  </div>
+  <div class="RelatedArticles">
+    <img src="https://cafeptthumb.example.com/thumb.jpg?type=f100_100" alt="관련글썸네일">
+    <a>관련 글 제목</a>
+  </div>
+</body>
+</html>
