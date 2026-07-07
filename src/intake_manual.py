@@ -155,6 +155,12 @@ def process_article(conn, folder):
     conn.execute("DELETE FROM post_images WHERE post_id=?", (post_id,))
 
     paras = split_paragraphs(clean)
+    # 본문 첫 줄이 제목과 같으면 문단에서 제외(제목은 posts.title에 이미 저장 — 문단 아님)
+    title = (meta.get("title") or "").strip()
+    if paras and title:
+        norm = lambda s: re.sub(r"[\s\W]", "", s)
+        if norm(paras[0]) == norm(title):
+            paras = paras[1:]
     para_info = []
     for i, p in enumerate(paras):
         role, conf = tag_role(p, i, len(paras))

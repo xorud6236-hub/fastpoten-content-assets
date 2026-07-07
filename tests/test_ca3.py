@@ -135,7 +135,7 @@ class TestPipeline(unittest.TestCase):
         pid = self.res["post_id"]
         np = self.conn.execute("SELECT COUNT(*) c FROM post_paragraphs WHERE post_id=?", (pid,)).fetchone()["c"]
         ni = self.conn.execute("SELECT COUNT(*) c FROM post_images WHERE post_id=?", (pid,)).fetchone()["c"]
-        self.assertEqual(np, 8)
+        self.assertEqual(np, 7)  # 제목 줄 제외 후 본문 7문단(부록 A와 동일)
         self.assertEqual(ni, 6)
 
     def test_paragraph_clean_text_masked(self):
@@ -158,7 +158,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(self.res["post_id"], self.res2["post_id"])
         pid = self.res["post_id"]
         np = self.conn.execute("SELECT COUNT(*) c FROM post_paragraphs WHERE post_id=?", (pid,)).fetchone()["c"]
-        self.assertEqual(np, 8)  # 재실행해도 8개(중복 누적 없음)
+        self.assertEqual(np, 7)  # 재실행해도 7개(중복 누적 없음)
 
 
 if __name__ == "__main__":
