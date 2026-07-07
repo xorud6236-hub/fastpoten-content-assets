@@ -62,9 +62,12 @@
 - [x] 방향 재정의(2026-07-07): 직원용 → 브랜드 자산 팩토리. 근거: docs/plans/20260707-brand-factory-pivot.md
 - [x] **CA-1 창고 뼈대(완료, 2026-07-06)**: 폴더구조 + `src/db.py`(14테이블) + `src/load_rulebook.py`(카테고리15·금지어14·개인정보패턴6) — 노트 docs/notes/CA-1.md
 - [x] **CA-2 카페 엑셀 적재(완료, 2026-07-07)**: `src/ingest_excel.py` — posts 10,748 + 참고신호 10,115 + staff 81 (URL 11,821셀 100% 일치) — 노트 docs/notes/CA-2.md
-- [x] **CB-1 카드뉴스 조건카드 시제품(완료, 2026-07-07)**: `templates/`(brand.css+조건카드) + `src/cardnews.py`(JSON→헤드리스Chrome→PNG) + 샘플 3장(`out/cardnews/`). **사용자 퀄리티 판정 대기** — 노트 docs/notes/CB-1.md
-- [x] **CA-3 수동 투입 파이프라인(완료, 2026-07-07)**: `src/intake_manual.py` + `src/masking.py`(마스킹 단일출처). 부록 A 샘플(임상심리사2급)로 시연 — 본문 3버전·문단8·이미지6·마스킹100%. 노트 docs/notes/CA-3.md
-- [ ] **다음(둘 다 병행)**: ① CB-1 카드 색/톤 판정 반영 → CB-2(절차·비교 카드) ② CA-4 린터(masking.py 재사용) 또는 CA-5 임베딩
+- [x] **CB-1 카드뉴스 조건카드 시제품(완료, 2026-07-07)**: `templates/` + `src/cardnews.py` + 샘플 3장. **판정: 방향 채택, 퀄리티 고도화 필요**(FEEDBACK_LOG) — 노트 docs/notes/CB-1.md
+- [x] **CA-3 수동 투입 파이프라인(완료, 2026-07-07)**: `src/intake_manual.py` + `src/masking.py`. 합성 샘플(임상심리사2급) 시연 — 문단7·이미지6·마스킹100%. **판정: 실제 글로 재검증 예정**(FEEDBACK_LOG) — 노트 docs/notes/CA-3.md
+- [ ] **다음 작업 — 브리프: docs/plans/20260707-next-steps-고도화.md**:
+  - A. CA-3 실제 글 재검증(사용자가 inbox/에 실제 글 투입 — 템플릿 `examples/intake_sample/_템플릿/`)
+  - B. 카드 품질 고도화(트랙 B) — **복귀 시 "브랜드 색/로고 있나요?" 1개만 묻고 착수** → CB-2
+  - C. CA-4 린터(masking.py 재사용, 결정 불요 — 즉시 착수 가능)
 - [ ] 이후: docs/개발기획서-v2.md §트랙 표 순서
 - 백로그: BACKLOG.md
 - 새 PC에서 시작: `python src/db.py` → `python src/load_rulebook.py` → `python src/ingest_excel.py` → 테스트(tests/test_ca1.py, test_ca2.py). (data/는 git 제외라 로컬 재생성)
