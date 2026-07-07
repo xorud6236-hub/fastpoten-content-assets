@@ -1,0 +1,19 @@
+{
+  "title": "임상심리사 2급, 응시자격부터 정확히 알아볼게요",
+  "cafe_name": "공준모",
+  "account_id": "평생교육기관67",
+  "staff_name": "김민지",
+  "keyword": "임상심리사2급 응시자격",
+  "keyword_tier2": "임상심리사 수련",
+  "category": "심리·상담",
+  "publish_date": "2026-01-06",
+  "normalized_url": "https://cafe.naver.com/studentstudyhard/2712612",
+  "images": [
+    { "image_order": 1, "image_type": "제목배너", "image_role": "썸네일", "image_source_type": "내부제작", "reuse_scope": "image_reuse_allowed", "contains_person": false, "contains_logo": true, "contains_text": true, "nearby_paragraph_no": 1 },
+    { "image_order": 2, "image_type": "정보요약카드", "image_role": "응시자격설명", "image_source_type": "내부제작", "reuse_scope": "image_reuse_allowed", "contains_person": false, "contains_logo": false, "contains_text": true, "nearby_paragraph_no": 2 },
+    { "image_order": 3, "image_type": "표형이미지", "image_role": "주의사항", "image_source_type": "내부제작", "reuse_scope": "image_reuse_allowed", "contains_person": false, "contains_logo": false, "contains_text": true, "nearby_paragraph_no": 3 },
+    { "image_order": 4, "image_type": "분위기사진", "image_role": "도입분위기", "image_source_type": "외부이미지", "reuse_scope": "image_pattern_only", "contains_person": true, "contains_logo": false, "contains_text": false, "nearby_paragraph_no": 4 },
+    { "image_order": 5, "image_type": "정보요약카드", "image_role": "절차안내", "image_source_type": "내부제작", "reuse_scope": "image_reuse_allowed", "contains_person": false, "contains_logo": false, "contains_text": true, "nearby_paragraph_no": 5 },
+    { "image_order": 6, "image_type": "캡처", "image_role": "CTA유도", "image_source_type": "내부제작", "reuse_scope": "image_pattern_only", "contains_person": false, "contains_logo": true, "contains_text": true, "nearby_paragraph_no": 7, "note": "전화번호 포함 상담배너 → 원본 재사용 금지, 패턴만" }
+  ]
+}
