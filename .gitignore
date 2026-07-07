@@ -1,6 +1,7 @@
 data/
 corpus/
 inbox/
+out/
 __pycache__/
 *.pyc
 .env

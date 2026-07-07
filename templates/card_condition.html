@@ -1,0 +1,19 @@
+<!-- card_condition.html — 조건 정리 카드 템플릿 (CB-1)
+     색·글꼴은 brand.css에서만. 여기엔 하드코딩 금지.
+     이중중괄호 자리는 src/cardnews.py가 콘텐츠 JSON으로 채운다. -->
+<link rel="stylesheet" href="brand.css">
+<div class="card">
+  <div class="card__header">
+    <span class="card__chip">{{chip}}</span>
+    <div class="card__title">{{title}}</div>
+    <div class="card__subtitle">{{subtitle}}</div>
+  </div>
+  <div class="card__body">
+    {{rows}}
+  </div>
+  <div class="note">{{note}}</div>
+  <div class="card__footer">
+    <span class="card__brand">{{brand}}</span>
+    <span class="card__source">{{source}}</span>
+  </div>
+</div>
