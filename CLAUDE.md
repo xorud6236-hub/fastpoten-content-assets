@@ -31,9 +31,10 @@
 ## 4. 현재 진행 지점
 - [x] 기획 확정(서비스 v9 / 개발 v1)
 - [x] **CA-1 뼈대(완료, 2026-07-06)**: 폴더구조 + `src/db.py`(14테이블) + `src/load_rulebook.py`(카테고리 15·금지어 14·개인정보 패턴 6) — 작업노트 `docs/notes/CA-1.md`
-- [ ] **CA-2 엑셀 적재(다음 작업)** … CA-6 분석 산출물 (개발기획서 §5)
+- [x] **CA-2 엑셀 적재(완료, 2026-07-07)**: `src/ingest_excel.py` — posts 10,748건 + reference_signals 10,115건 + staff 81명 (URL 셀 11,821개 100% 계산 일치) — 작업노트 `docs/notes/CA-2.md`
+- [ ] **CA-3 수동 투입 파이프라인(다음 작업)** … CA-6 분석 산출물 (개발기획서 §5)
 - 백로그: BACKLOG.md
-- 새 PC에서 시작 시: `python src/db.py` → `python src/load_rulebook.py` → `python tests/test_ca1.py` (data/는 깃 미포함이라 로컬 재생성)
+- 새 PC에서 시작 시: `python src/db.py` → `python src/load_rulebook.py` → `python src/ingest_excel.py` → 테스트(`python tests/test_ca1.py`, `tests/test_ca2.py`) (data/는 깃 미포함이라 로컬 재생성)
 
 ## 5. 참고 자료 위치
 - 엑셀(현황 시트): 저장소 루트 `1부서 카페 포스팅 시트_계정정보제거.xlsx` — **계정 정보 탭 제거본**(원본은 깃 제외, .gitignore 참조)
