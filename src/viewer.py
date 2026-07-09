@@ -12,8 +12,11 @@
   - raw_text / body_raw / body_clean 의 '원본 문자열'은 마스킹 통과분 외에는 화면에 절대 출력하지 않는다.
   - "가림 종류·건수"는 서버 내부에서만 계산한다: body_clean(개인정보 포함)을 서버가 읽어
     masking.py로 다시 가려 hit의 '종류'만 세고, 원본 문자열은 화면으로 내보내지 않는다.
-  - 이미지: reuse_scope 가 image_reuse_allowed 이고 인물 미포함인 안전 분류만 썸네일,
-    그 외(권리확인/원본금지/인물포함)는 실제 그림 대신 자리표시.
+  - 이미지: 이 뷰어는 localhost 읽기전용·관리자 1인 검수용이라 추출 이미지를 실제로 보여준다
+    (불변 1은 '발행·재사용 금지'지 '검수 보기 금지'가 아님 — 사람이 개인정보 유무·재사용 가부를
+    판단하려면 봐야 함). 단 reuse_scope 배지(재사용 가능/권리 확인 필요/원본 재사용 금지)는 그대로
+    표시해 재사용 전 검토가 필요함을 남긴다. 파일 서빙은 corpus 하위 경로만(traversal 차단).
+    이미지 '텍스트' 마스킹과는 무관 — 이미지 노출은 검수 화면 한정, 원문 텍스트 누출은 여전히 0.
 
 사용:
   python src/viewer.py                # 기본 포트 8765로 켜기 → http://localhost:8765/
@@ -34,8 +37,27 @@ from db import DEFAULT_DB_PATH, ROOT_DIR, get_connection  # noqa: E402
 import masking  # noqa: E402
 
 TOKENS_PATH = os.path.join(ROOT_DIR, "templates", "tokens.css")
+CORPUS_DIR = os.path.join(ROOT_DIR, "corpus")   # 이미지 서빙 허용 루트(밖은 차단)
 AUTO_VIEW_MARK = "자동추출:조회수"  # extract_cafe가 조회수 행에 남기는 표식(참고 신호)
-SAFE_REUSE = "image_reuse_allowed"
+
+
+def safe_image_path(local_path):
+    """DB의 local_path → corpus 하위의 실제 파일 절대경로. 벗어나거나 없으면 None.
+
+    ★ 경로안전(traversal 차단): local_path는 DB에서만 오고, 절대/`..` 경로로 corpus 밖을
+    가리키면 거부한다. realpath로 정규화 후 corpus 하위인지 commonpath로 검증(다른 드라이브면 ValueError→None).
+    로컬 검수 화면이라 reuse_scope·contains_person으로는 막지 않지만, 파일 위치는 반드시 corpus 안이어야 한다.
+    """
+    if not local_path:
+        return None
+    try:
+        fp = os.path.realpath(os.path.join(ROOT_DIR, local_path))
+        corpus = os.path.realpath(CORPUS_DIR)
+        if os.path.commonpath([fp, corpus]) != corpus:
+            return None
+    except ValueError:      # 다른 드라이브 등 공통경로 없음 → 밖으로 간주
+        return None
+    return fp if os.path.isfile(fp) else None
 
 # 화면 문구(설계안 그대로 — 코드 용어·등급 용어 금지)
 FAIL_MESSAGES = {
@@ -200,6 +222,7 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .imgcard .cls { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .imgcard .badges > * { margin: 0 6px 6px 0; }
 .thumb { max-width: 100%; border-radius: 6px; display: block; margin-top: 8px; }
+.imgnote { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .placeholder { background: #eef1f5; color: var(--muted); border-radius: 6px;
                padding: 24px 12px; text-align: center; font-size: 13px; margin-top: 8px; }
 /* 목록 표 — 줄 전체가 클릭 영역(진짜 링크) */
@@ -354,11 +377,14 @@ def render_detail(conn, id_raw):
             badges = [f"<span class='badge {cls}'>{esc(label)}</span>"]
             if person:
                 badges.append("<span class='badge danger'>인물 포함</span>")
-            safe = (im["reuse_scope"] == SAFE_REUSE and not person and im["local_path"])
-            if safe and os.path.exists(os.path.join(ROOT_DIR, im["local_path"])):
-                media = f"<img class='thumb' src='/img?id={im['image_id']}' alt='이미지 미리보기'>"
+            # 로컬 검수 화면: 추출 이미지는 항상 실제로 표시(파일이 corpus 안에 있으면).
+            #   재사용 가부는 위 배지로 명시 — '보이되 재사용 전 검토 필요'를 캡션으로 남긴다.
+            if safe_image_path(im["local_path"]):
+                media = ("<img class='thumb' src='/img?id="
+                         f"{im['image_id']}' alt='추출 이미지 (재사용 전 검토 필요)'>"
+                         "<div class='imgnote'>재사용 전 검토 필요 — 검수용 보기입니다.</div>")
             else:
-                media = "<div class='placeholder'>미리보기 가림 (개인정보 가능성)</div>"
+                media = "<div class='placeholder'>이미지 파일을 찾을 수 없습니다.</div>"
             cards.append(
                 "<div class='imgcard'>"
                 f"<div class='cls'>{im['image_order'] or '?'}. {esc(cls_line)}</div>"
@@ -516,19 +542,17 @@ def make_handler(db_path):
             self.wfile.write(data)
 
         def _send_image(self, conn, id_raw):
-            # 방어(불변 1): 안전 분류 이미지만 서빙. 그 외는 404(원본 노출 금지).
+            # 로컬 검수용: reuse_scope·contains_person 게이트는 표시 목적상 완화.
+            #   단 경로안전은 유지 — image_id는 정수 강제, local_path는 DB에서만,
+            #   corpus 하위 실제 파일만 서빙(safe_image_path). 아니면 404.
             try:
                 image_id = int(id_raw)
             except (TypeError, ValueError):
                 return self._deny()
             row = conn.execute(
-                "SELECT reuse_scope, contains_person, local_path "
-                "FROM post_images WHERE image_id=?", (image_id,)).fetchone()
-            if (row is None or row["reuse_scope"] != SAFE_REUSE
-                    or row["contains_person"] or not row["local_path"]):
-                return self._deny()
-            fp = os.path.join(ROOT_DIR, row["local_path"])
-            if not os.path.exists(fp):
+                "SELECT local_path FROM post_images WHERE image_id=?", (image_id,)).fetchone()
+            fp = safe_image_path(row["local_path"]) if row else None
+            if not fp:
                 return self._deny()
             ctype = mimetypes.guess_type(fp)[0] or "application/octet-stream"
             self._send_file(fp, ctype)

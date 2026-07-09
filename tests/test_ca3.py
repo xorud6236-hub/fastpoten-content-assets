@@ -67,7 +67,7 @@ class TestMasking(unittest.TestCase):
 class TestParagraph(unittest.TestCase):
     def test_split(self):
         paras = im.split_paragraphs("가\n나\n\n다\n\n\n라")
-        self.assertEqual(paras, ["가 나", "다", "라"])
+        self.assertEqual(paras, ["가\n나", "다", "라"])  # 문단 내부 단일 개행 보존(빈 줄만 문단 분리)
 
     def test_intro_first(self):
         role, conf = im.tag_role("안녕하세요! 응시자격 알아볼게요", 0, 5)

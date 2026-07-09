@@ -9,6 +9,7 @@
 사용: python tests/test_cafe_extract.py
 """
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -68,6 +69,24 @@ class TestParser(unittest.TestCase):
         joined = "\n".join(self.parsed["lines"])
         self.assertNotIn("허가를 받아 작성", joined)
         self.assertTrue(self.parsed["lines"][0].startswith("안녕하세요"))
+
+    def test_internal_soft_linebreaks_preserved(self):
+        # ★ 수정 A: 구간 내부 원본 줄 구조(\n)를 보존해야 함(공백 벽 텍스트 제거).
+        #   같은 구간의 여러 se-text-paragraph(원본 줄)·여러 텍스트 컴포넌트가 \n으로 이어짐.
+        body_text = "\n".join(self.parsed["lines"])
+        # 한 컴포넌트 내 두 se-text-paragraph가 \n으로(공백 병합 아님)
+        self.assertIn("응시자격은 학사학위와 1년 수련이 필요합니다.\n이건 꼭 확인하세요.", body_text)
+        self.assertNotIn("필요합니다. 이건 꼭 확인하세요.", body_text)   # 공백으로 안 뭉침
+        # 같은 구간의 다른 텍스트 컴포넌트도 \n으로 이어짐
+        self.assertIn("이건 꼭 확인하세요.\n궁금하면 담당 민지쌤에게 문의주세요.", body_text)
+        # 구간(이미지) 경계는 여전히 빈 줄 1개(\n\n) → 구간 수 = 이미지 경계 수
+        segs = [s for s in re.split(r"\n\s*\n", body_text.strip()) if s.strip()]
+        self.assertEqual(len(segs), 3)                       # 이미지 2개 → 텍스트 구간 3개
+        self.assertEqual(len(self.parsed["images"]), 2)
+        self.assertIn("\n", segs[1])                         # 구간 내부에 단일 \n 살아있음
+        # clean_body(정제) 후에도 내부 단일 \n 보존(과분할 없이 벽 텍스트만 해소)
+        cleaned = im.clean_body(body_text)
+        self.assertIn("필요합니다.\n이건 꼭 확인하세요.", cleaned)
 
     def test_text_between_images_merged_into_one_paragraph(self):
         # ★ 문단 경계 = 이미지. 두 이미지 사이의 se-text 컴포넌트 여러 개가 한 문단으로 병합.

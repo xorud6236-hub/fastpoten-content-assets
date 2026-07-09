@@ -12,10 +12,12 @@
 사용: python tests/test_viewer.py
 """
 import os
+import shutil
 import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -75,11 +77,22 @@ class TestViewerInvariant(unittest.TestCase):
             "INSERT INTO post_paragraphs (post_id, paragraph_no, raw_text, clean_text, "
             "role, contains_fact, contains_cta) VALUES (21512, 2, ?, ?, '배경설명', 0, 0)",
             (PARA_RAW_SENTINEL, "그 밖의 안내 문단입니다."))
-        # 이미지: 인물 포함/원본금지 → 썸네일 아님(자리표시)
+        # 이미지1: 실제 추출 이미지(corpus 하위 실파일) — 로컬 검수 화면이라 인물포함/원본금지여도 표시.
+        cls.img_dir = os.path.join(viewer.CORPUS_DIR, "_test_viewer_tmp")
+        os.makedirs(cls.img_dir, exist_ok=True)
+        img_file = os.path.join(cls.img_dir, "img.png")
+        with open(img_file, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")   # PNG 시그니처(서빙 검증용 더미)
+        img_rel = os.path.relpath(img_file, viewer.ROOT_DIR)
         conn.execute(
-            "INSERT INTO post_images (post_id, image_order, image_type, reuse_scope, "
-            "contains_person, local_path) VALUES (21512, 1, '본문이미지', "
-            "'image_pattern_only', 1, 'corpus/post/img.png')")
+            "INSERT INTO post_images (image_id, post_id, image_order, image_type, reuse_scope, "
+            "contains_person, local_path) VALUES (7001, 21512, 1, '본문이미지', "
+            "'image_pattern_only', 1, ?)", (img_rel,))
+        # 이미지2: local_path가 corpus 밖을 가리킴(traversal) — 실파일이 있어도 서빙 거부돼야 함
+        conn.execute(
+            "INSERT INTO post_images (image_id, post_id, image_order, image_type, reuse_scope, "
+            "contains_person, local_path) VALUES (7002, 21512, 2, '본문이미지', "
+            "'image_rights_review', 0, 'corpus/../CLAUDE.md')")
         # 조회수 = 참고 신호
         conn.execute(
             "INSERT INTO reference_signals (post_id, view_count, collected_from_sheet) "
@@ -96,10 +109,19 @@ class TestViewerInvariant(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        shutil.rmtree(cls.img_dir, ignore_errors=True)
 
     def _get(self, path):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
             return r.read().decode("utf-8")
+
+    def _status(self, path):
+        """상태 코드만(경로안전 검증용). 404 등은 HTTPError로 옴."""
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
 
     # ---- ★ 불변 1: 개인정보 누출 없음(왼쪽 원문 흐름은 마스킹돼 표시됨) ----
     def test_detail_no_pii_leak(self):
@@ -140,12 +162,35 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertIn("총 ", h)
         self.assertIn("건", h)
 
-    def test_image_is_placeholder_not_thumbnail(self):
-        # 인물 포함/원본금지 → 실제 그림(img 태그·/img 링크) 대신 자리표시
+    def test_extracted_image_is_shown_for_review(self):
+        # 로컬 검수 화면: 추출 이미지(인물포함/원본금지여도)를 실제 <img>로 표시.
+        #   단 reuse_scope 배지와 '재사용 전 검토 필요'는 그대로 남는다.
         h = self._get("/post?id=21512")
-        self.assertIn("미리보기 가림", h)
-        self.assertNotIn("/img?id=", h)
-        self.assertIn("원본 재사용 금지", h)
+        self.assertIn("<img class='thumb'", h)         # 자리표시 아님 — 실제 그림
+        self.assertIn("/img?id=7001", h)               # 서빙 링크
+        self.assertIn("원본 재사용 금지", h)             # reuse 배지 유지
+        self.assertIn("재사용 전 검토 필요", h)           # 검토 필요 표시 유지
+
+    def test_img_serves_corpus_file(self):
+        # corpus 하위 실파일은 200으로 서빙
+        self.assertEqual(self._status("/img?id=7001"), 200)
+
+    def test_img_rejects_path_outside_corpus(self):
+        # ★ 경로안전: local_path가 corpus 밖(traversal)을 가리키면 실파일이어도 404
+        self.assertEqual(self._status("/img?id=7002"), 404)
+
+    def test_img_rejects_non_integer_id(self):
+        # ★ 경로안전: image_id 정수 강제 — 비정수는 404
+        self.assertEqual(self._status("/img?id=abc"), 404)
+        self.assertEqual(self._status("/img?id=1%20OR%201"), 404)
+
+    def test_img_display_does_not_leak_text_pii(self):
+        # 이미지 표시를 켜도 텍스트 PII 누출은 여전히 0
+        h = self._get("/post?id=21512")
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+        self.assertNotIn(PARA_RAW_SENTINEL, h)
 
     def test_list_shows_post(self):
         h = self._get("/")

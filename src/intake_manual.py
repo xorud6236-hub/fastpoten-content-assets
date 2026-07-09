@@ -43,11 +43,15 @@ FACT_HINTS = ["학위", "학점", "시간", "과목", "1년", "수련", "필기"
 
 
 def split_paragraphs(text):
-    """빈 줄 기준 문단 분리. 각 문단 내부 줄바꿈은 공백으로 정리."""
+    """빈 줄 기준 문단 분리. 문단 내부 원본 줄바꿈(단일 개행)은 보존, 좌우 공백만 정리.
+
+    (분리 규칙은 빈 줄 기준 그대로 — 내부 개행 보존은 문단 수에 영향 없음.
+     오른쪽 '정리결과' 패널이 원문처럼 줄 구조를 유지하도록 함.)
+    """
     blocks = re.split(r"\n\s*\n", text.strip())
     paras = []
     for b in blocks:
-        clean = re.sub(r"\s*\n\s*", " ", b.strip())
+        clean = re.sub(r"[ \t]*\n[ \t]*", "\n", b.strip())  # 개행 좌우 공백만 제거, 개행은 보존
         clean = re.sub(r"[ \t]{2,}", " ", clean)
         if clean:
             paras.append(clean)

@@ -157,7 +157,8 @@ def parse_body_html(body_html):
 
     se-component 블록을 문서 순서대로 훑는다:
       - 텍스트 계열 컴포넌트(se-text/소제목/인용/표) = 문단 버퍼에 계속 누적
-        (내부 여러 se-text-paragraph = 소프트 줄바꿈 → 공백으로 이어붙임).
+        (내부 여러 se-text-paragraph = 원본 줄 → \\n으로 이어붙여 줄 구조 보존).
+        같은 구간(이미지 사이)의 여러 텍스트 컴포넌트도 \\n으로 이어붙임(공백 벽 텍스트 방지).
       - 이미지 컴포넌트(se-image)를 만나면: (1) 누적된 텍스트 버퍼를 한 문단으로 flush,
         (2) 이미지 1장 기록(그룹이면 여러 장, src는 고해상 우선 data-lazy-src → src).
         nearby_paragraph_no = 그때까지 flush된 문단 수(1-based) → 이미지↔텍스트 원본 순서 보존.
@@ -196,8 +197,8 @@ def parse_body_html(body_html):
         if not buf:                  # 연속 이미지·맨앞 이미지 → 빈 문단 만들지 않음
             return
         if lines:
-            lines.append("")         # 문단 사이 빈 줄 1개
-        lines.append(" ".join(buf))
+            lines.append("")         # 구간(이미지) 경계는 빈 줄 1개(\n\n)
+        lines.append("\n".join(buf))  # 같은 구간의 컴포넌트들은 \n으로(원본 줄 구조 보존)
         buf.clear()
         para_count += 1
 
@@ -220,7 +221,11 @@ def _iter_components(body_html):
 
 
 def _component_text(chunk):
-    """텍스트 계열 컴포넌트에서 문단 텍스트 추출(내부 se-text-paragraph를 공백으로 이어붙임)."""
+    """텍스트 계열 컴포넌트에서 문단 텍스트 추출(내부 se-text-paragraph 각각을 원본 줄로 보고 \\n으로 이어붙임).
+
+    한 se-text-paragraph = 원본 한 줄 → 내부 공백은 정리하되 줄 사이는 \\n으로 보존해
+    벽 텍스트(공백 병합)를 막는다. 구간(이미지) 경계는 상위 flush가 빈 줄로 별도 구분.
+    """
     parts = _PARA_RE.findall(chunk)
     if not parts:
         parts = [chunk]  # se-sectionTitle 등 se-text-paragraph가 없으면 컴포넌트 전체 텍스트로(best-effort)
@@ -228,10 +233,10 @@ def _component_text(chunk):
     for part in parts:
         txt = re.sub(r"<[^>]+>", "", part)
         txt = _unescape(txt).replace("​", "").replace("﻿", "")  # zero-width/BOM 제거
-        txt = re.sub(r"\s+", " ", txt).strip()
+        txt = re.sub(r"\s+", " ", txt).strip()  # 한 줄 내부 공백만 정리(줄 사이 \n은 아래 join에서 보존)
         if txt:
             out.append(txt)
-    return " ".join(out).strip()
+    return "\n".join(out).strip()
 
 
 def _imgs_in(chunk):
