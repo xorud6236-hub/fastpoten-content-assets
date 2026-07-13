@@ -22,14 +22,16 @@
   python src/viewer.py                # 기본 포트 8765로 켜기 → http://localhost:8765/
   python src/viewer.py 9000           # 포트 지정
 """
+import datetime
 import html as html_mod
 import mimetypes
 import os
 import re
 import sqlite3
+import statistics
 import sys
 import urllib.parse
-from collections import Counter
+from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -145,6 +147,70 @@ def is_success(status):
 
 
 # ---------------------------------------------------------------------------
+# 분석(참고 신호) 집계 — reference_signals를 한 번의 JOIN으로 가져와 N+1 회피
+# ---------------------------------------------------------------------------
+def _parse_days(publish_date, today):
+    """publish_date(YYYY-MM-DD…) → 오늘까지 경과일. 없거나 파싱불가면 None."""
+    try:
+        y, m, d = map(int, str(publish_date)[:10].split("-"))
+        return (today - datetime.date(y, m, d)).days
+    except Exception:
+        return None
+
+
+def analysis_records(conn, today):
+    """분석 대상(추출완료 + 조회수 있음)을 한 번의 쿼리로. 행마다 재조회 없음(N+1 회피).
+    조회수는 reference_signals의 '자동추출:조회수' 행. 하루당조회 vpd=views/max(경과일,1)."""
+    rows = conn.execute(
+        "SELECT p.post_id, p.title, p.keyword, p.staff_name, p.publish_date, "
+        "rs.view_count AS views, "
+        "(SELECT COUNT(*) FROM post_paragraphs pp WHERE pp.post_id=p.post_id) np, "
+        "(SELECT COUNT(*) FROM post_images pi WHERE pi.post_id=p.post_id) ni, "
+        "(SELECT COALESCE(SUM(LENGTH(clean_text)),0) FROM post_paragraphs pp "
+        "   WHERE pp.post_id=p.post_id) chars "
+        "FROM posts p "
+        "LEFT JOIN reference_signals rs "
+        "  ON rs.post_id=p.post_id AND rs.collected_from_sheet=? "
+        "WHERE p.body_raw_path IS NOT NULL AND rs.view_count IS NOT NULL",
+        (AUTO_VIEW_MARK,)).fetchall()
+    recs = []
+    for r in rows:
+        dg = _parse_days(r["publish_date"], today)
+        v = r["views"]
+        vpd = (v / max(dg, 1)) if dg is not None else None
+        recs.append(dict(pid=r["post_id"], title=r["title"], kw=r["keyword"],
+                         staff=r["staff_name"], pd=r["publish_date"], dg=dg,
+                         v=v, vpd=vpd, np=r["np"], ni=r["ni"], chars=r["chars"] or 0))
+    return recs
+
+
+def pearson(xs, ys):
+    """짝지은 값의 피어슨 상관계수. 표본<3이면 None."""
+    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    if len(pairs) < 3:
+        return None
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    mx = statistics.mean(xs)
+    my = statistics.mean(ys)
+    num = sum((x - mx) * (y - my) for x, y in pairs)
+    den = (sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)) ** 0.5
+    return num / den if den else None
+
+
+def rel_label(r):
+    """상관 세기 일상어(설계 규칙). |r|<0.1 거의 없음 … 0.5+ 뚜렷."""
+    a = abs(r)
+    if a < 0.1:
+        return "거의 관계 없음"
+    if a < 0.3:
+        return "약한 관계"
+    if a < 0.5:
+        return "어느 정도 관계"
+    return "뚜렷한 관계"
+
+
+# ---------------------------------------------------------------------------
 # 공통 HTML 뼈대 + 씨앗 스타일 (색·글꼴은 tokens.css 변수만 참조)
 # ---------------------------------------------------------------------------
 PAGE_CSS = """
@@ -225,20 +291,46 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .imgnote { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .placeholder { background: #eef1f5; color: var(--muted); border-radius: 6px;
                padding: 24px 12px; text-align: center; font-size: 13px; margin-top: 8px; }
-/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크) */
+/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 9컬럼(제목·카페·담당자·상태·가림·문단·이미지·조회수·작성일) */
 .listhead, .listrow { display: grid;
-    grid-template-columns: 3fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 1.1fr; gap: 12px;
+    grid-template-columns: 2.6fr 1fr 1fr 1.2fr 0.7fr 0.6fr 0.7fr 0.9fr 1.1fr; gap: 12px;
     padding: 12px 16px; align-items: center; }
 .listhead { color: var(--muted); font-size: 13px; font-weight: 700;
             border-bottom: 2px solid var(--line); }
 .listrow { background: var(--paper); border-bottom: 1px solid var(--line);
            color: var(--ink); }
 .listrow:hover { background: #eef4fb; text-decoration: none; }
-.listrow .r-title { font-weight: 700; color: var(--brand); }
+.listrow .r-title { font-weight: 700; color: var(--brand);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .num-dim { color: var(--muted); }
+.num { text-align: right; }
 .filters { margin: 16px 0; font-size: 14px; }
+.filters a.on { font-weight: 800; text-decoration: underline; }
+.filters .note { color: var(--muted); font-size: 13px; margin-left: 8px; }
 .state { background: var(--paper); border: 1px solid var(--line);
          border-radius: 8px; padding: 32px; text-align: center; color: var(--muted); }
+/* 상단 띠 화면 이동 메뉴 — 현재 화면은 굵게·밑줄(색만이 아니라 글자로도 구분) */
+.navmenu { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.navmenu a.here { font-weight: 800; text-decoration: underline; }
+/* 분석 화면 — 안내·섹션 부제·정직 박스·표 가로 스크롤 */
+.intro { font-size: 15px; margin: 6px 0 2px; }
+.intro.sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+.secsub { color: var(--muted); font-size: 13px; font-weight: 400; margin-left: 8px; }
+.tablewrap { overflow-x: auto; margin-bottom: 8px; }
+.honest { background: var(--note-bg); color: var(--note-ink);
+          border: 1px solid var(--warn); border-radius: 8px;
+          padding: 16px; font-weight: 700; margin-top: 16px; line-height: 1.6; }
+.rel-line { padding: 4px 0; }
+/* 분석 전용 표 그리드(그리드 비율만 변형 — .listrow 색·행높이·hover는 그대로) */
+.an1 .listhead, .an1 .listrow { grid-template-columns: 2.6fr 1.3fr 1fr 0.9fr 1fr 0.9fr 1fr;
+            min-width: 760px; }
+.an2 .listhead, .an2 .listrow { grid-template-columns: 2fr 0.8fr 1.2fr 1.2fr 1.4fr;
+            min-width: 620px; }
+.an3 .listhead, .an3 .listrow { grid-template-columns: 2fr 1fr 1.3fr; min-width: 420px; }
+.an4 .listhead, .an4 .listrow { grid-template-columns: 2fr 1fr 1fr 1fr; min-width: 480px; }
+/* 누를 수 없는 집계 줄(섹션 2·3·4) — hover 강조·커서 없음 */
+.listrow.static { cursor: default; }
+.listrow.static:hover { background: var(--paper); }
 """
 
 
@@ -251,6 +343,20 @@ def page(title, topbar_html, body_html):
         f"<style>{PAGE_CSS}</style></head><body>"
         f"{topbar_html}{body_html}</body></html>"
     )
+
+
+def nav_menu(current):
+    """상단 띠 왼쪽 화면 이동 메뉴(글 목록 · 분석). 현재 화면은 here(굵게·밑줄)."""
+    def item(href, label, key):
+        cls = " class='here'" if current == key else ""
+        return f"<a href='{href}'{cls}>{label}</a>"
+    return ("<span class='navmenu'>"
+            + item("/", "글 목록", "list") + " · "
+            + item("/analysis", "분석", "analysis") + "</span>")
+
+
+def _comma(n):
+    return f"{n:,}"
 
 
 # ---------------------------------------------------------------------------
@@ -432,15 +538,23 @@ def render_not_found():
 # ---------------------------------------------------------------------------
 # 화면 B — 목록
 # ---------------------------------------------------------------------------
-def render_list(conn, view="all"):
+def render_list(conn, view="all", sort="recent"):
+    # 입력검증: 쿼리값을 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
+    view = view if view in ("ok", "fail") else "all"
+    sort = "views" if sort == "views" else "recent"
     try:
+        # ★ 조회수(참고 신호)를 한 번의 JOIN으로(행마다 재조회 없음 — N+1 회피).
         rows = conn.execute(
-            "SELECT post_id, title, cafe_name, extraction_status, publish_date, "
-            "body_clean_path, "
+            "SELECT p.post_id, p.title, p.cafe_name, p.staff_name, p.extraction_status, "
+            "p.publish_date, p.body_clean_path, rs.view_count AS views, "
             "(SELECT COUNT(*) FROM post_paragraphs pp WHERE pp.post_id=p.post_id) para_n, "
             "(SELECT COUNT(*) FROM post_images pi WHERE pi.post_id=p.post_id) img_n "
-            "FROM posts p WHERE body_raw_path IS NOT NULL "
-            "ORDER BY updated_at DESC, post_id DESC").fetchall()
+            "FROM posts p "
+            "LEFT JOIN reference_signals rs "
+            "  ON rs.post_id=p.post_id AND rs.collected_from_sheet=? "
+            "WHERE p.body_raw_path IS NOT NULL "
+            "ORDER BY p.updated_at DESC, p.post_id DESC",
+            (AUTO_VIEW_MARK,)).fetchall()
     except sqlite3.Error:
         # 자산창고 파일/테이블을 못 열 때(코드 용어 노출 금지)
         topbar = "<div class='topbar'><span class='t-title'>추출 글 품질 확인</span></div>"
@@ -449,10 +563,15 @@ def render_list(conn, view="all"):
                 "</div></div>")
         return page("추출 글 품질 확인", topbar, body)
 
+    rows = list(rows)
+    if sort == "views":  # 조회수 높은 순(없는 글은 뒤로)
+        rows.sort(key=lambda r: (r["views"] is not None, r["views"] or 0), reverse=True)
+
     n_total = len(rows)
     n_ok = sum(1 for r in rows if is_success(r["extraction_status"]))
     n_fail = n_total - n_ok
-    topbar = ("<div class='topbar'><span class='t-title'>추출 글 품질 확인</span>"
+    topbar = ("<div class='topbar'>" + nav_menu("list")
+              + "<span class='t-title'>추출 글 품질 확인</span>"
               f"<span class='badge ok'>총 {n_total}건 · 성공 {n_ok} · 실패 {n_fail}</span></div>")
 
     if n_total == 0:
@@ -468,8 +587,9 @@ def render_list(conn, view="all"):
         return True
 
     head = ("<div class='listhead'>"
-            "<div>제목</div><div>카페</div><div>상태</div>"
-            "<div>가림</div><div>문단</div><div>이미지</div><div>작성일</div></div>")
+            "<div>제목</div><div>카페</div><div>담당자</div><div>상태</div>"
+            "<div>가림</div><div>문단</div><div>이미지</div>"
+            "<div class='num'>조회수</div><div>작성일</div></div>")
     body_rows = []
     for r in rows:
         if not match(r):
@@ -479,21 +599,216 @@ def render_list(conn, view="all"):
         #   글이 대량이 되면 건수를 저장해 두는 방식으로 바꿀 것.
         mask_n = sum(mask_type_counts(conn, r["body_clean_path"]).values())
         mask_cls = "" if mask_n else " num-dim"
+        v = r["views"]
+        view_cell = (f"<div class='num'>{_comma(v)}</div>" if v is not None
+                     else "<div class='num num-dim'>-</div>")
         body_rows.append(
             f"<a class='listrow' href='/post?id={r['post_id']}'>"
             f"<div class='r-title'>{esc(r['title'] or '(제목 없음)')}</div>"
             f"<div>{esc(r['cafe_name'] or '-')}</div>"
+            f"<div>{esc(r['staff_name'] or '-')}</div>"
             f"<div><span class='badge {'ok' if ok else 'danger'}'>"
             f"{esc(r['extraction_status'] or '상태 미상')}</span></div>"
             f"<div class='{mask_cls.strip()}'>{mask_n}건</div>"
             f"<div>{r['para_n']}</div><div>{r['img_n']}</div>"
+            f"{view_cell}"
             f"<div>{esc(r['publish_date'] or '-')}</div></a>")
 
+    def on(cond):
+        return " class='on'" if cond else ""
+    vq = f"&view={view}" if view != "all" else ""
     filters = ("<div class='filters'>보기: "
-               "<a href='/'>전체</a> · <a href='/?view=ok'>성공만</a> · "
-               "<a href='/?view=fail'>실패만</a></div>")
+               f"<a href='/'{on(view=='all' and sort=='recent')}>전체</a> · "
+               f"<a href='/?view=ok'{on(view=='ok')}>성공만</a> · "
+               f"<a href='/?view=fail'{on(view=='fail')}>실패만</a>"
+               "&nbsp;&nbsp;|&nbsp;&nbsp;정렬: "
+               f"<a href='/?sort=recent{vq}'{on(sort=='recent')}>최신순</a> · "
+               f"<a href='/?sort=views{vq}'{on(sort=='views')}>조회수 높은 순</a>"
+               "<span class='note'>조회수는 참고 신호입니다.</span></div>")
     body = (f"<div class='wrap'>{filters}{head}{''.join(body_rows)}</div>")
     return page("추출 글 품질 확인", topbar, body)
+
+
+# ---------------------------------------------------------------------------
+# 화면 C — 분석 (참고 신호 대시보드, 읽기 전용)
+# ---------------------------------------------------------------------------
+SECTION1_TOP = 50   # 섹션1 표에 보일 상위 건수(결정 5)
+SECTION2_TOP = 20   # 섹션2 키워드 상위 N
+
+
+def render_analysis(conn, sort="views", min_age=False):
+    # 입력검증: sort를 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
+    sort = "vpd" if sort == "vpd" else "views"
+    topbar_menu = nav_menu("analysis")
+    try:
+        recs = analysis_records(conn, datetime.date.today())
+    except sqlite3.Error:
+        topbar = ("<div class='topbar'>" + topbar_menu
+                  + "<span class='t-title'>참고 신호 분석</span></div>")
+        body = ("<div class='wrap'><div class='state'>분석을 불러오지 못했습니다. "
+                "자산창고 파일을 찾을 수 없어요. 자산창고를 먼저 만든 뒤 다시 열어주세요."
+                "</div></div>")
+        return page("참고 신호 분석", topbar, body)
+
+    n_target = len(recs)
+    topbar = ("<div class='topbar'>" + topbar_menu
+              + "<span class='t-title'>참고 신호 분석</span>"
+              f"<span class='badge ok'>분석 대상 {n_target}건</span></div>")
+
+    if n_target == 0:
+        body = ("<div class='wrap'><div class='state'>아직 분석할 글이 없습니다. "
+                "글을 추출해서 조회수를 확보한 뒤 이 화면을 새로고침하세요.</div></div>")
+        return page("참고 신호 분석", topbar, body)
+
+    # 30일+ 필터: 켜면 경과일<30(또는 작성일 불명) 글 제외
+    used = [r for r in recs if r["dg"] is not None and r["dg"] >= 30] if min_age else recs
+
+    # --- 안내 두 줄 ---
+    intro = (
+        "<p class='intro'>추출된 우리 카페 글의 조회수(참고 신호)로 "
+        "\"어떤 주제·누가 많이 읽혔나\"를 봅니다.</p>"
+        "<p class='intro sub'>조회수는 성과가 아니라 참고 신호입니다. "
+        "카페 순위는 실제 조회수와 거의 맞지 않아 이 화면에서 뺐습니다.</p>")
+
+    # --- 조절 바(주소 링크로만, JS 없음) ---
+    def on(cond):
+        return " class='on'" if cond else ""
+    ageq = "&min_age=30" if min_age else ""
+    controls = (
+        "<div class='filters'>정렬: "
+        f"<a href='/analysis?sort=views{ageq}'{on(sort=='views')}>조회수 순</a> · "
+        f"<a href='/analysis?sort=vpd{ageq}'{on(sort=='vpd')}>하루당 조회수 순</a>"
+        "&nbsp;&nbsp;|&nbsp;&nbsp;기간: "
+        f"<a href='/analysis?sort={sort}'{on(not min_age)}>전체</a> · "
+        f"<a href='/analysis?sort={sort}&min_age=30'{on(min_age)}>올린 지 30일 지난 글만</a>"
+        "<div class='note'>하루당 조회수는 최근에 올린 글이 높게 나오는 경향이 있어요"
+        "(조회가 초반에 몰림). 오래된 글과 견줄 땐 '조회수 순'도 함께 보세요.</div></div>")
+
+    # 30일+ 필터가 전부 걸러낸 경우(빈 집합) — 평균 계산 크래시 방지, 안내만
+    if not used:
+        body = (f"<div class='wrap'>{intro}{controls}"
+                "<div class='state'>고른 조건(올린 지 30일 지난 글)에 맞는 글이 없습니다. "
+                "‘전체’로 바꾸면 모든 글을 볼 수 있어요.</div></div>")
+        return page("참고 신호 분석", topbar, body)
+
+    # --- 섹션 1: 글별 조회수 ---
+    if sort == "vpd":
+        s1 = sorted(used, key=lambda r: (r["vpd"] is not None, r["vpd"] or 0), reverse=True)
+    else:
+        s1 = sorted(used, key=lambda r: r["v"], reverse=True)
+    shown = s1[:SECTION1_TOP]
+    s1_head = ("<div class='listhead'><div>제목</div><div>키워드</div><div>담당자</div>"
+               "<div class='num'>조회수</div><div class='num'>하루당 조회수</div>"
+               "<div>형식</div><div>작성일</div></div>")
+    s1_rows = []
+    for r in shown:
+        vpd_cell = (f"{r['vpd']:.1f}" if r["vpd"] is not None else "-")
+        s1_rows.append(
+            f"<a class='listrow' href='/post?id={r['pid']}'>"
+            f"<div class='r-title'>{esc(r['title'] or '(제목 없음)')}</div>"
+            f"<div>{esc(r['kw'] or '-')}</div>"
+            f"<div>{esc(r['staff'] or '-')}</div>"
+            f"<div class='num'>{_comma(r['v'])}</div>"
+            f"<div class='num'>{vpd_cell}</div>"
+            f"<div>{r['np']}문단·{r['ni']}장</div>"
+            f"<div>{esc(str(r['pd'] or '-')[:10])}</div></a>")
+    s1_more = f"<p class='intro sub'>상위 {SECTION1_TOP}건만 보입니다 (전체 {len(used)}건).</p>" \
+        if len(used) > SECTION1_TOP else f"<p class='intro sub'>전체 {len(used)}건.</p>"
+    sec1 = ("<h2 class='sec'>조회수 높은 글"
+            "<span class='secsub'>정렬: 조회수 순 / 하루당 조회수 순 (위 조절 바)</span></h2>"
+            f"<div class='an1'><div class='tablewrap'>{s1_head}{''.join(s1_rows)}</div></div>"
+            f"{s1_more}")
+
+    # --- 섹션 2: 키워드별 조회수(2건+) ---
+    gk = defaultdict(list)
+    for r in used:
+        gk[r["kw"] or "(없음)"].append(r)
+    kstats = []
+    for k, g in gk.items():
+        if len(g) < 2:
+            continue
+        vpds = [x["vpd"] for x in g if x["vpd"] is not None]
+        kstats.append((k, len(g), statistics.mean(x["v"] for x in g),
+                       sum(x["v"] for x in g),
+                       statistics.mean(vpds) if vpds else None))
+    kstats.sort(key=lambda x: x[2], reverse=True)
+    if kstats:
+        k_head = ("<div class='listhead'><div>키워드</div><div class='num'>글 수</div>"
+                  "<div class='num'>평균 조회수</div><div class='num'>합계 조회수</div>"
+                  "<div class='num'>평균 하루당 조회수</div></div>")
+        k_rows = []
+        for k, n, av, sm, avpd in kstats[:SECTION2_TOP]:
+            avpd_cell = f"{avpd:.1f}" if avpd is not None else "-"
+            k_rows.append(
+                "<div class='listrow static'>"
+                f"<div>{esc(k)}</div><div class='num'>{n}</div>"
+                f"<div class='num'>{_comma(round(av))}</div>"
+                f"<div class='num'>{_comma(sm)}</div>"
+                f"<div class='num'>{avpd_cell}</div></div>")
+        sec2 = (f"<h2 class='sec'>키워드별 조회수<span class='secsub'>글이 2건 이상인 "
+                f"키워드만 · 평균 조회수 높은 순 상위 {SECTION2_TOP}</span></h2>"
+                f"<div class='an2'><div class='tablewrap'>{k_head}{''.join(k_rows)}</div></div>")
+    else:
+        sec2 = ("<h2 class='sec'>키워드별 조회수</h2><div class='state'>"
+                "아직 여러 번 쓴 키워드가 없어 키워드별 비교를 만들 수 없습니다.</div>")
+
+    # --- 섹션 3: 담당자별 조회수 ---
+    gs = defaultdict(list)
+    for r in used:
+        gs[r["staff"] or "(없음)"].append(r)
+    sstats = sorted(
+        ((s, len(g), statistics.mean(x["v"] for x in g)) for s, g in gs.items()),
+        key=lambda x: x[2], reverse=True)
+    s_head = ("<div class='listhead'><div>담당자</div><div class='num'>글 수</div>"
+              "<div class='num'>평균 조회수</div></div>")
+    s_rows = "".join(
+        "<div class='listrow static'>"
+        f"<div>{esc(s)}</div><div class='num'>{n}</div>"
+        f"<div class='num'>{_comma(round(av))}</div></div>"
+        for s, n, av in sstats)
+    sec3 = ("<h2 class='sec'>담당자별 조회수<span class='secsub'>평균 조회수 높은 순</span></h2>"
+            f"<div class='an3'><div class='tablewrap'>{s_head}{s_rows}</div></div>")
+
+    # --- 섹션 4: 형식과 조회수의 관계(정직 섹션) ---
+    vs = [r["v"] for r in used]
+    rel_rows = []
+    for label, xs in [("문단 수", [r["np"] for r in used]),
+                      ("이미지 수", [r["ni"] for r in used]),
+                      ("글자 수", [r["chars"] for r in used])]:
+        r_val = pearson(xs, vs)
+        if r_val is None:
+            rel_rows.append(f"<div class='rel-line'>{label} ↔ 조회수 : (표본 부족)</div>")
+        else:
+            rel_rows.append(f"<div class='rel-line'>{label} ↔ 조회수 : "
+                            f"{rel_label(r_val)} (r={r_val:+.2f})</div>")
+    # 상위25% vs 하위25%(조회수 기준)
+    by_v = sorted(used, key=lambda r: r["v"], reverse=True)
+    q = max(len(by_v) // 4, 1)
+    top, bot = by_v[:q], by_v[-q:]
+
+    def _avg(g, k):
+        return statistics.mean(r[k] for r in g)
+    cmp_head = ("<div class='listhead'><div>구분</div><div class='num'>평균 문단</div>"
+                "<div class='num'>평균 이미지</div><div class='num'>평균 글자수</div></div>")
+    cmp_rows = "".join(
+        f"<div class='listrow static'><div>{lbl}</div>"
+        f"<div class='num'>{_avg(g,'np'):.1f}</div>"
+        f"<div class='num'>{_avg(g,'ni'):.1f}</div>"
+        f"<div class='num'>{_comma(round(_avg(g,'chars')))}</div></div>"
+        for lbl, g in [("조회수 상위 25% 글", top), ("조회수 하위 25% 글", bot)])
+    honest = ("<div class='honest'>글의 형식(문단 수·이미지 수·글자 수)만으로는 많이 본 글과 "
+              "아닌 글을 가를 수 없습니다. 조회수를 가르는 건 형식보다 "
+              "\"무엇을 다뤘나(주제·시의성)\"에 더 가깝습니다.</div>")
+    sec4 = ("<h2 class='sec'>형식과 조회수, 관계가 있을까?</h2>"
+            f"{''.join(rel_rows)}"
+            f"<div class='an4'><div class='tablewrap' style='margin-top:12px'>"
+            f"{cmp_head}{cmp_rows}</div></div>{honest}")
+
+    body = (f"<div class='wrap'>{intro}{controls}{sec1}"
+            f"<div style='margin-top:32px'>{sec2}</div>"
+            f"<div style='margin-top:32px'>{sec3}</div>"
+            f"<div style='margin-top:32px'>{sec4}</div></div>")
+    return page("참고 신호 분석", topbar, body)
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +827,12 @@ def make_handler(db_path):
             conn = get_connection(db_path)
             try:
                 if u.path == "/":
-                    self._send_html(render_list(conn, qs.get("view", ["all"])[0]))
+                    self._send_html(render_list(
+                        conn, qs.get("view", ["all"])[0], qs.get("sort", ["recent"])[0]))
+                elif u.path == "/analysis":
+                    self._send_html(render_analysis(
+                        conn, qs.get("sort", ["views"])[0],
+                        qs.get("min_age", [None])[0] == "30"))
                 elif u.path == "/post":
                     self._send_html(render_detail(conn, qs.get("id", [None])[0]))
                 elif u.path == "/img":

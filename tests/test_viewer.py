@@ -201,6 +201,59 @@ class TestViewerInvariant(unittest.TestCase):
         h = self._get("/post?id=99999")
         self.assertIn("그런 글이 없습니다.", h)
 
+    # ---- 목록 화면 새 컬럼(담당자·조회수) ----
+    def test_list_has_staff_and_view_columns(self):
+        h = self._get("/")
+        self.assertIn("<div>담당자</div>", h)              # 새 헤더 컬럼
+        self.assertIn(">조회수</div>", h)                   # 새 헤더 컬럼(num 정렬)
+        self.assertIn("조회수는 참고 신호입니다.", h)        # 참고 신호 병기(불변 3)
+        self.assertIn("1,234", h)                           # 천단위 쉼표 조회수
+        self.assertIn("김민지", h)                           # 담당자 실명(내부 검수 허용)
+
+    # ---- 분석 화면 렌더 + 개인정보 누출 0(불변 1·3) ----
+    def test_analysis_renders_sections(self):
+        h = self._get("/analysis")
+        self.assertIn("참고 신호 분석", h)
+        self.assertIn("조회수 높은 글", h)
+        self.assertIn("키워드별 조회수", h)
+        self.assertIn("담당자별 조회수", h)
+        self.assertIn("형식과 조회수, 관계가 있을까?", h)
+        self.assertIn("분석 대상 1건", h)
+        self.assertIn("1,234", h)                           # 조회수 천단위
+        # 불변 3 — 성과로 단정하지 않고 참고 신호로 표기
+        self.assertIn("참고 신호", h)
+        self.assertNotIn("성과 등급", h)
+
+    def test_analysis_no_pii_leak(self):
+        h = self._get("/analysis")
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)                       # '김민지쌤'(호칭 포함) 누출 없음
+        self.assertNotIn(OPENCHAT, h)
+        self.assertNotIn(PARA_RAW_SENTINEL, h)
+
+    def test_analysis_sort_and_filter_urls_ok(self):
+        # 정렬/기간 URL 모두 500 없이 렌더(urlopen은 500이면 예외)
+        for path in ("/analysis?sort=views", "/analysis?sort=vpd",
+                     "/analysis?min_age=30", "/analysis?sort=vpd&min_age=30"):
+            h = self._get(path)
+            self.assertIn("참고 신호 분석", h)
+
+
+class TestAnalysisMath(unittest.TestCase):
+    """분석 집계의 비자명 수치 로직(상관·세기 라벨) 자체검증 — 깨지면 실패."""
+
+    def test_pearson_perfect_and_none(self):
+        self.assertAlmostEqual(viewer.pearson([1, 2, 3, 4], [2, 4, 6, 8]), 1.0, places=6)
+        self.assertAlmostEqual(viewer.pearson([1, 2, 3, 4], [8, 6, 4, 2]), -1.0, places=6)
+        self.assertIsNone(viewer.pearson([1, 2], [1, 2]))       # 표본<3
+        self.assertIsNone(viewer.pearson([5, 5, 5], [1, 2, 3]))  # 분산 0 → None
+
+    def test_rel_label_bands(self):
+        self.assertEqual(viewer.rel_label(-0.08), "거의 관계 없음")
+        self.assertEqual(viewer.rel_label(0.2), "약한 관계")
+        self.assertEqual(viewer.rel_label(-0.4), "어느 정도 관계")
+        self.assertEqual(viewer.rel_label(0.7), "뚜렷한 관계")
+
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
