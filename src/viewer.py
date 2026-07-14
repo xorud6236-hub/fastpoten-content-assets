@@ -340,6 +340,15 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .an9 .listhead, .an9 .listrow { grid-template-columns: 1.6fr 0.5fr 1.6fr 0.5fr 1.4fr;
             min-width: 700px; }
 .an10 .listhead, .an10 .listrow { grid-template-columns: 3fr 1fr; min-width: 360px; }
+/* 주제 검수 — near중복 후보 판단 카드(원본 키워드 함께 보기) */
+.dupcard { background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+           padding: 14px 16px; margin-bottom: 12px; }
+.dupcard .why { font-size: 13px; color: var(--note-ink); background: var(--note-bg);
+                display: inline-block; border-radius: 6px; padding: 2px 8px; margin-bottom: 10px; }
+.dup-cols { display: flex; flex-wrap: wrap; gap: 16px; }
+.dup-side { flex: 1 1 300px; min-width: 260px; }
+.dup-side .th { font-weight: 800; color: var(--brand); }
+.dup-side .kw { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-word; }
 /* 데이터 현황 숫자 카드 — 가로로 늘어놓기 */
 .statcards { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 20px; }
 .statcard { flex: 1 1 150px; min-width: 130px; background: var(--paper);
@@ -1144,21 +1153,39 @@ def render_topics(conn):
         "규칙에 한 줄로 반영합니다. 자동으로 합치지 않아요 — 예: ‘심리상담사↔상담심리사’는 "
         "글자만 비슷하지 다른 자격증이라 합치면 안 됩니다.</p>")
 
-    # near-중복 후보
+    # near-중복 후보 — 각 후보의 '원본 키워드'를 함께 보여줘 사람이 직접 판단(D2)
     import keyword_normalize as kn
+    members = defaultdict(list)   # 주제 → [(원본키워드, 글수)]
+    for r in conn.execute(
+            "SELECT keyword, COUNT(*) n FROM posts WHERE keyword IS NOT NULL "
+            "GROUP BY keyword"):
+        t = kn.normalize(r["keyword"])
+        if t:
+            members[t].append((r["keyword"], r["n"]))
+
+    def member_str(topic, top=6):
+        ms = sorted(members.get(topic, []), key=lambda x: -x[1])
+        shown = ", ".join(f"{esc(k)}({n})" for k, n in ms[:top])
+        extra = f" 외 {len(ms) - top}개" if len(ms) > top else ""
+        return shown + extra or "(없음)"
+
     cands = kn.near_duplicate_candidates(list(counts.items()))
     if cands:
-        c_head = ("<div class='listhead'><div>주제 A</div><div class='num'>글 수</div>"
-                  "<div>주제 B</div><div class='num'>글 수</div><div>왜 후보인가</div></div>")
-        c_rows = "".join(
-            "<div class='listrow static'>"
-            f"<div>{esc(a)}</div><div class='num'>{_comma(ac)}</div>"
-            f"<div>{esc(b)}</div><div class='num'>{_comma(bc)}</div>"
-            f"<div>{esc(why)}</div></div>"
+        cards = "".join(
+            "<div class='dupcard'>"
+            f"<div class='why'>{esc(why)}</div>"
+            "<div class='dup-cols'>"
+            f"<div class='dup-side'><div class='th'>{esc(a)} · 글 {_comma(ac)}</div>"
+            f"<div class='kw'>{member_str(a)}</div></div>"
+            f"<div class='dup-side'><div class='th'>{esc(b)} · 글 {_comma(bc)}</div>"
+            f"<div class='kw'>{member_str(b)}</div></div>"
+            "</div></div>"
             for a, b, ac, bc, why in cands)
         sec_c = ("<h2 class='sec'>같은 주제일 수 있는 후보"
                  f"<span class='secsub'>합칠지는 사람이 판단 · {len(cands)}쌍</span></h2>"
-                 f"<div class='an9'><div class='tablewrap'>{c_head}{c_rows}</div></div>")
+                 "<p class='intro sub'>각 후보의 <b>원본 키워드(괄호=글 수)</b>를 보고 "
+                 "같은 주제면 알려주세요 — 규칙에 반영합니다. 다른 자격증이면 그대로 둡니다.</p>"
+                 f"{cards}")
     else:
         sec_c = ("<h2 class='sec'>같은 주제일 수 있는 후보</h2>"
                  "<div class='state'>눈에 띄는 중복 후보가 없습니다.</div>")
