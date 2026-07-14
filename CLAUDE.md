@@ -80,7 +80,8 @@
   - C. CA-4 린터(masking.py 재사용, 결정 불요 — 즉시 착수 가능)
 - [ ] 이후: docs/개발기획서-v2.md §트랙 표 순서
 - 백로그: BACKLOG.md
-- 새 PC에서 시작: `python src/db.py` → `python src/load_rulebook.py` → `python src/ingest_excel.py` → 테스트(tests/test_ca1.py, test_ca2.py). (data/는 git 제외라 로컬 재생성)
+- **데이터 동기화(2026-07-14~)**: data/·corpus/는 OneDrive\fastpoten-data 에 두고 프로젝트엔 junction 연결(개인정보라 공개 저장 금지, 내 OneDrive만). 새 PC에서 1회 `powershell -ExecutionPolicy Bypass -File setup_data_link.ps1` → OneDrive 동기화 후 뷰어 켜기. **규칙: 한 번에 한 PC만, PC 바꾸기 전 뷰어/추출 끄고 OneDrive 초록체크 확인**(동시 사용 시 SQLite 손상 위험). corpus는 추출할수록 커지니 OneDrive 용량(무료 5GB) 주의.
+- 새 PC에서 데이터부터 새로 만들 때(동기화 안 쓸 경우): `python src/db.py` → `python src/load_rulebook.py` → `python src/ingest_excel.py` → 테스트. (data/는 git 제외)
 
 ## 기록 파일
 - DECISION_LOG.md(결정 이력) / FEEDBACK_LOG.md(사용 불편 기록 — 운영하며 채움) / docs/plans/(아이디어·계획 브리프) / docs/notes/(차수별 작업노트)
