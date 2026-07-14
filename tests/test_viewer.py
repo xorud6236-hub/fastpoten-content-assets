@@ -359,6 +359,18 @@ class TestTrendsMath(unittest.TestCase):
         self.assertEqual(top[0]["peak_month"], 4)
         self.assertAlmostEqual(top[0]["peak_pct"], 90.0, places=1)
 
+    def test_monthly_share_heatmap(self):
+        import trends
+        recs = ([self._rec("H", 2026, 4, 5) for _ in range(2)]      # 4월 H 2 / 전체 10 = 20%
+                + [self._rec("X", 2026, 4, 5) for _ in range(8)]
+                + [self._rec("H", 2026, 5, 5) for _ in range(8)]     # 5월 H 8 / 전체 10 = 80%
+                + [self._rec("X", 2026, 5, 5) for _ in range(2)])
+        hm = trends.monthly_share_heatmap(recs, top_n=5, min_month_total=5)
+        self.assertEqual(hm["months"], ["2026-04", "2026-05"])
+        hrow = next(r for r in hm["rows"] if r["topic"] == "H")
+        self.assertAlmostEqual(hrow["cells"][0], 20.0, places=1)
+        self.assertAlmostEqual(hrow["cells"][1], 80.0, places=1)
+
     def test_intramonth_late_skew(self):
         import trends
         recs = ([self._rec("L", 2026, 4, 25) for _ in range(8)]

@@ -355,6 +355,18 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
             border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
 .statcard .n { font-size: 24px; font-weight: 800; color: var(--brand); }
 .statcard .l { font-size: 13px; color: var(--muted); margin-top: 2px; }
+/* 월별 비중 히트맵 — 주제(행)×월(열), 칸 배경 농도로 비중 표현 */
+.heatmap { min-width: 560px; }
+.hm-row { display: grid; gap: 2px; margin-bottom: 2px; align-items: stretch; }
+.hm-head { margin-bottom: 4px; }
+.hm-head .hm-mh { font-size: 11px; color: var(--muted); text-align: center; align-self: end;
+                  padding-bottom: 3px; }
+.hm-t { font-size: 13px; font-weight: 700; color: var(--ink); display: flex;
+        justify-content: space-between; align-items: center; padding-right: 8px;
+        overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.hm-t .hm-tot { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
+.hm-c { min-height: 26px; display: flex; align-items: center; justify-content: center;
+        font-size: 11px; color: var(--ink); border-radius: 3px; border: 1px solid var(--line); }
 /* 추세 방향 글자색(색만이 아니라 화살표·부호로도 구분) */
 .trend-up { color: var(--ok); font-weight: 700; }
 .trend-down { color: var(--danger); font-weight: 700; }
@@ -930,38 +942,36 @@ def render_trends(conn):
         "<p class='intro sub'>‘비중’으로 봅니다 — 최근일수록 전체 발행량 자체가 늘어(2026 집중), "
         "원시 건수는 대부분 증가하기 때문. 비중을 보면 ‘상대적으로’ 뜨는/식는 주제만 남습니다.</p>")
 
-    # --- 분기별 뜨는/식는 ---
-    qt = trends.quarter_trends(recs)
-    qspan = (f"{qt['quarters'][0]} ~ {qt['quarters'][-1]}" if qt["quarters"] else "-")
-
-    def trend_table(items, up):
-        head = ("<div class='listhead'><div>주제</div><div class='num'>총 글수</div>"
-                "<div class='num'>시작 비중</div><div class='num'>최근 비중</div>"
-                "<div class='num'>추세</div></div>")
-        rows = []
-        for it in items:
-            arrow = "▲" if up else "▼"
-            cls = "trend-up" if up else "trend-down"
-            rows.append(
-                "<div class='listrow static'>"
-                f"<div>{esc(it['topic'])}</div>"
-                f"<div class='num'>{_comma(it['total'])}</div>"
-                f"<div class='num'>{it['first_pct']:.1f}%</div>"
-                f"<div class='num'>{it['last_pct']:.1f}%</div>"
-                f"<div class='num {cls}'>{arrow} {it['slope']:+.2f}%/분기</div></div>")
-        return f"<div class='an6'><div class='tablewrap'>{head}{''.join(rows)}</div></div>"
-
-    if qt["rising"] or qt["falling"]:
-        sec_q = (f"<h2 class='sec'>분기별 뜨는·식는 주제<span class='secsub'>{esc(qspan)} · "
-                 "비중=그 분기 전체 글 중 % · 40건+ 주제만</span></h2>"
-                 "<p class='intro sub'>▲ 최근 비중이 오르는 주제(더 밀고 있음) / "
-                 "▼ 비중이 빠지는 주제.</p>"
-                 f"{trend_table(qt['rising'], True)}"
-                 "<p class='intro sub' style='margin-top:12px'>▼ 비중이 식는 주제</p>"
-                 f"{trend_table(qt['falling'], False)}")
+    # --- 월별 비중 히트맵 (분기 '시작 vs 최근' 기울기의 함정 대체) ---
+    hm = trends.monthly_share_heatmap(recs)
+    if hm["months"] and hm["rows"]:
+        mx = hm["max_share"] or 1.0
+        gcols = f"grid-template-columns:150px repeat({len(hm['months'])},minmax(30px,1fr));"
+        hm_head = (f"<div class='hm-row hm-head' style='{gcols}'><div class='hm-t'>주제</div>"
+                   + "".join(f"<div class='hm-mh'>{esc(m[2:4])}.{esc(m[5:7])}</div>"
+                             for m in hm["months"]) + "</div>")
+        hm_rows = []
+        for r in hm["rows"]:
+            cells = []
+            for sh in r["cells"]:
+                alpha = (min(sh / mx, 1.0) * 0.92) if mx else 0.0
+                txt = f"{sh:.0f}" if sh >= 3 else ""
+                cells.append(f"<div class='hm-c' "
+                             f"style='background:rgba(var(--heat),{alpha:.2f})'>{txt}</div>")
+            hm_rows.append(
+                f"<div class='hm-row' style='{gcols}'>"
+                f"<div class='hm-t'>{esc(r['topic'])}"
+                f"<span class='hm-tot'>{_comma(r['total'])}</span></div>"
+                f"{''.join(cells)}</div>")
+        sec_h = ("<h2 class='sec'>월별 비중 히트맵<span class='secsub'>주제(행)×월(열) · 상위 15개 "
+                 "· 칸이 진할수록 그 달 전체 글 중 그 주제 비중 높음</span></h2>"
+                 "<p class='intro sub'>매 달의 비중을 그대로 보여줍니다 — ‘시작 대비 최근’ 방식은 "
+                 "뒤늦게 생긴 주제가 늘 상승처럼 보이는 함정이 있어, 달별 색으로 추세를 직접 보게 했어요. "
+                 "왼→오른쪽으로 <b>색이 짙어지면 뜨는 주제, 옅어지면 식는 주제</b>입니다.</p>"
+                 f"<div class='tablewrap'><div class='heatmap'>{hm_head}{''.join(hm_rows)}</div></div>")
     else:
-        sec_q = ("<h2 class='sec'>분기별 뜨는·식는 주제</h2><div class='state'>"
-                 "분기별 비교에 쓸 물량이 아직 부족합니다.</div>")
+        sec_h = ("<h2 class='sec'>월별 비중 히트맵</h2><div class='state'>"
+                 "히트맵에 쓸 월별 물량이 아직 부족합니다.</div>")
 
     # --- 월별 계절성 ---
     seas = trends.seasonality(recs)
@@ -1014,7 +1024,7 @@ def render_trends(conn):
               "데이터랩 같은 외부 트렌드로 겹쳐 봐야 확정할 수 있고, 진짜 성과는 자사 채널 실측입니다. "
               "표본도 최근(2025~2026)에 치우쳐 있어 ‘발견’이지 ‘확정’이 아닙니다.</div>")
 
-    body = (f"<div class='wrap'>{intro}{sec_q}"
+    body = (f"<div class='wrap'>{intro}{sec_h}"
             f"<div style='margin-top:32px'>{sec_s}</div>"
             f"<div style='margin-top:32px'>{sec_d}</div>"
             f"{honest}</div>")

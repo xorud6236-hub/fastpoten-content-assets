@@ -102,6 +102,34 @@ def quarter_trends(recs, min_topic=40, min_quarter=150, top=10):
     return dict(quarters=quarters, rising=rising, falling=falling)
 
 
+def monthly_share_heatmap(recs, top_n=15, months_back=12, min_month_total=30):
+    """월별 '비중' 히트맵 데이터 — 주제(행) × 월(열), 칸=그 달 전체 글 중 주제 비중(%).
+    ★ '시작 vs 최근' 기울기의 함정(뒤늦게 생긴 주제가 늘 0→X로 '상승'처럼 보임)을 피하려고
+      매 달의 비중을 그대로 보여준다(사람이 추세를 눈으로 판단). 물량 적은 달(min_month_total 미만)은
+      비중이 튀므로 제외. 반환: dict(months=[YYYY-MM], rows=[dict(topic,total,cells=[%])], max_share)."""
+    month_total = Counter(f"{r['y']}-{r['m']:02d}" for r in recs)
+    months = [m for m in sorted(month_total) if month_total[m] >= min_month_total][-months_back:]
+    mset = set(months)
+    topic_total = Counter(r["topic"] for r in recs)
+    tops = [t for t, _ in topic_total.most_common(top_n)]
+    tm = defaultdict(Counter)
+    for r in recs:
+        mk = f"{r['y']}-{r['m']:02d}"
+        if mk in mset and r["topic"] in tops:
+            tm[r["topic"]][mk] += 1
+    rows = []
+    max_share = 0.0
+    for t in tops:
+        cells = []
+        for mk in months:
+            tot = month_total[mk]
+            sh = (tm[t].get(mk, 0) / tot * 100) if tot else 0.0
+            cells.append(sh)
+            max_share = max(max_share, sh)
+        rows.append(dict(topic=t, total=topic_total[t], cells=cells))
+    return dict(months=months, rows=rows, max_share=max_share)
+
+
 def seasonality(recs, min_topic=40, top=10):
     """달력 월(1-12)에 쏠린 주제. 반환: [dict(topic, total, peak_month, peak_pct)] 쏠림 큰 순."""
     topic_total = Counter(r["topic"] for r in recs)
