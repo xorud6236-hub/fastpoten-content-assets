@@ -888,8 +888,19 @@ def render_trends(conn):
               + "<span class='t-title'>주제·시기 트렌드</span>"
               f"<span class='badge ok'>대상 {_comma(len(recs))}건</span></div>")
     if not recs:
-        body = ("<div class='wrap'><div class='state'>작성일이 있는 글이 아직 없습니다."
-                "</div></div>")
+        # 빈 원인을 구분해 안내(비개발자 자가진단) — 창고가 통째로 비었나 vs 데이터 형태 문제.
+        try:
+            nposts = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+        except sqlite3.Error:
+            nposts = 0
+        if nposts == 0:
+            msg = ("창고에 글이 아직 없습니다. 엑셀 원자료를 먼저 불러오세요 — 프로젝트 폴더에서 "
+                   "<b>db.py → load_rulebook.py → ingest_excel.py</b> 순서로 실행한 뒤 이 화면을 "
+                   "새로고침하면 됩니다. (창고 파일은 PC마다 다시 만들어야 해요.)")
+        else:
+            msg = ("글은 있는데 ‘작성일·키워드’가 트렌드에 쓸 형태가 아닙니다. 작성일이 "
+                   "‘2026-03-15’ 형식인지, 키워드가 채워졌는지 확인이 필요합니다.")
+        body = f"<div class='wrap'><div class='state'>{msg}</div></div>"
         return page("주제·시기 트렌드", topbar, body)
 
     intro = (

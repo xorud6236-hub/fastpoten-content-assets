@@ -334,6 +334,28 @@ class TestTrendsMath(unittest.TestCase):
         self.assertAlmostEqual(im["late"][0]["late_pct"], 80.0, places=1)
 
 
+class TestTrendsEmptyState(unittest.TestCase):
+    """빈 트렌드 화면이 원인별로 다른 안내를 준다 — 창고 비면 '엑셀 적재 먼저'."""
+
+    def test_empty_posts_guides_to_ingest(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            conn = db.get_connection(os.path.join(tmp, "e.sqlite3"))
+            db.init_db(conn)                 # 테이블만 있고 posts 0건
+            conn.commit()
+            h = viewer.render_trends(conn)
+            self.assertIn("ingest_excel", h)          # 적재 안내 문구
+            self.assertNotIn("작성일이 있는 글이 아직 없습니다", h)  # 옛 뭉뚱그린 문구 아님
+            conn.close()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ymd_year_cap_allows_future(self):
+        import trends
+        self.assertEqual(trends._ymd("2027-03-15"), (2027, 3, 15))  # 2027 시한폭탄 방지
+        self.assertIsNone(trends._ymd("2323-01-01"))                # 명백한 오타는 계속 배제
+
+
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

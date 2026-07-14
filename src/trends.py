@@ -24,12 +24,14 @@ _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 
 def _ymd(publish_date):
-    """publish_date(YYYY-MM-DD…) → (year, month, day) 또는 None. 오타연도(2323 등) 걸러냄."""
+    """publish_date(YYYY-MM-DD…) → (year, month, day) 또는 None. 오타연도(2323 등) 걸러냄.
+    ★ 연도 상한은 넉넉히(2035) — 특정 연도 하드코딩(2026)은 다음 해 글을 조용히 버린다.
+      명백한 오타(2323)만 거르고 실제 미래 글은 통과시킨다. ingest_excel.normalize_date와 동기화."""
     m = _DATE_RE.match(str(publish_date) or "")
     if not m:
         return None
     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    if not (2020 <= y <= 2026 and 1 <= mo <= 12 and 1 <= d <= 31):
+    if not (2015 <= y <= 2035 and 1 <= mo <= 12 and 1 <= d <= 31):
         return None
     return y, mo, d
 
