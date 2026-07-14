@@ -184,6 +184,16 @@ def topic_performance(conn, today, min_extracted=2, top=25):
     return sorted(out, key=lambda x: -x["avg_views"])[:top]
 
 
+def topic_counts(conn):
+    """posts 전체를 주제로 묶은 (topic -> 글수) Counter. 주제 검수·데이터 화면 공용."""
+    cnt = Counter()
+    for r in conn.execute("SELECT keyword FROM posts WHERE keyword IS NOT NULL"):
+        t = normalize(r["keyword"])
+        if t:
+            cnt[t] += 1
+    return cnt
+
+
 def topic_sample_skew(conn):
     """주제별 조회수 표본(추출+조회수 있는 글)이 어느 출처 시트에 쏠렸는지.
     반환: (dominant_sheet, dominant_pct, total). 표본 없으면 (None, 0.0, 0).

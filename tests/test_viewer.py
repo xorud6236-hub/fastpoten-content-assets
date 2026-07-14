@@ -258,6 +258,29 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertNotIn(PII_NAME, h)
         self.assertNotIn(OPENCHAT, h)
 
+    def test_nav_has_all_menus(self):
+        # 한 사이트에서 5개 화면을 메뉴로 오간다
+        h = self._get("/analysis")
+        for path in ("/", "/analysis", "/trends", "/topics", "/data"):
+            self.assertIn(f"href='{path}'", h)
+
+    def test_data_renders_and_no_pii(self):
+        h = self._get("/data")
+        self.assertIn("창고 현황", h)
+        self.assertIn("룰북 열람", h)
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+        self.assertNotIn(PARA_RAW_SENTINEL, h)
+
+    def test_topics_renders_and_no_pii(self):
+        h = self._get("/topics")
+        self.assertIn("주제 검수", h)
+        self.assertIn("주제 목록", h)
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+
 
 class TestAnalysisMath(unittest.TestCase):
     """분석 집계의 비자명 수치 로직(상관·세기 라벨) 자체검증 — 깨지면 실패."""
@@ -291,6 +314,17 @@ class TestKeywordNormalize(unittest.TestCase):
         self.assertEqual(kn.normalize("사이버대학교 학점은행제"), "사이버대학")  # 표기+꼬리말
         self.assertIsNone(kn.normalize("학점은행제"))   # 일반어만 → 주제 없음
         self.assertIsNone(kn.normalize(""))
+
+    def test_near_duplicate_candidates(self):
+        import keyword_normalize as kn
+        tc = [("사이버대학", 188), ("사이버대", 2), ("사회복지사", 130),
+              ("사회복지사2급", 417), ("종합미용면허증", 100), ("미용종합면허증", 90)]
+        flat = {tuple(sorted((a, b)))
+                for a, b, ac, bc, why in kn.near_duplicate_candidates(tc, min_count=2)}
+        self.assertIn(tuple(sorted(("종합미용면허증", "미용종합면허증"))), flat)  # 어순
+        self.assertIn(tuple(sorted(("사이버대", "사이버대학"))), flat)          # 1글자 차
+        # 급 차이는 병합 후보 아님(과병합 방지)
+        self.assertNotIn(tuple(sorted(("사회복지사", "사회복지사2급"))), flat)
 
 
 class TestTrendsMath(unittest.TestCase):

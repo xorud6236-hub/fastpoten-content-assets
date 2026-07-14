@@ -80,6 +80,51 @@ def normalize(keyword):
     return ALIAS.get(s, s)
 
 
+_LEVEL_RE = re.compile(r"^\s*[1-3]급$")   # '2급' 등 급 구분은 병합 후보에서 제외
+
+
+def near_duplicate_candidates(topic_counts, min_count=2, limit=40):
+    """(topic, count) 목록에서 '같은 주제일 수 있는' 쌍을 찾는다(D2 검수 후보 — 읽기전용).
+    두 기준:
+      (a) 글자 구성이 같음 = 어순·표기 변형(예: 종합미용면허증 ↔ 미용종합면허증)
+      (b) 한쪽이 다른쪽의 앞부분이고 차이가 2글자 이하이며 급(1/2/3급) 구분이 아님
+          (예: 사이버대학 ↔ 사이버대학교). 급 차이(사회복지사 ↔ 사회복지사2급)는 제외.
+    확정은 사람이 한다(맞으면 ALIAS에 한 줄 추가). 반환: [(a, b, count_a, count_b, 사유)]."""
+    items = [(t, c) for t, c in topic_counts if c >= min_count and t]
+    cand = []
+    seen = set()
+
+    def add(a, b, ac, bc, why):
+        key = tuple(sorted((a, b)))
+        if key not in seen:
+            seen.add(key)
+            cand.append((a, b, ac, bc, why))
+
+    # (a) 글자구성 동일(anagram) — 공백 무시하고 글자 정렬이 같으면 한 묶음
+    buckets = {}
+    for t, c in items:
+        sig = "".join(sorted(t.replace(" ", "")))
+        buckets.setdefault(sig, []).append((t, c))
+    for group in buckets.values():
+        if len(group) >= 2:
+            group.sort(key=lambda x: -x[1])
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    add(group[i][0], group[j][0], group[i][1], group[j][1],
+                        "글자 구성 같음(어순·표기)")
+
+    # (b) 앞부분 일치 + 뒤 차이 2글자 이하(급 구분 제외)
+    for a, ac in items:
+        for b, bc in items:
+            if len(b) > len(a) and b.startswith(a):
+                diff = b[len(a):]
+                if len(diff) <= 2 and not _LEVEL_RE.match(diff):
+                    add(a, b, ac, bc, f"뒤에 ‘{diff.strip()}’만 다름")
+
+    cand.sort(key=lambda x: -(x[2] + x[3]))
+    return cand[:limit]
+
+
 def _selftest():
     cases = {
         "사회복지사2급 취업": "사회복지사2급",

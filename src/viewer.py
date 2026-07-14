@@ -336,6 +336,16 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .an6 .listhead, .an6 .listrow { grid-template-columns: 2fr 0.8fr 1fr 1fr 1.1fr; min-width: 640px; }
 .an7 .listhead, .an7 .listrow { grid-template-columns: 2fr 0.9fr 1fr 1fr; min-width: 520px; }
 .an8 .listhead, .an8 .listrow { grid-template-columns: 2fr 0.8fr 0.8fr 0.8fr 0.8fr; min-width: 560px; }
+/* 주제 검수 — near중복 후보(주제A·글수·주제B·글수·사유) / 주제 목록(주제·글수) */
+.an9 .listhead, .an9 .listrow { grid-template-columns: 1.6fr 0.5fr 1.6fr 0.5fr 1.4fr;
+            min-width: 700px; }
+.an10 .listhead, .an10 .listrow { grid-template-columns: 3fr 1fr; min-width: 360px; }
+/* 데이터 현황 숫자 카드 — 가로로 늘어놓기 */
+.statcards { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 20px; }
+.statcard { flex: 1 1 150px; min-width: 130px; background: var(--paper);
+            border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.statcard .n { font-size: 24px; font-weight: 800; color: var(--brand); }
+.statcard .l { font-size: 13px; color: var(--muted); margin-top: 2px; }
 /* 추세 방향 글자색(색만이 아니라 화살표·부호로도 구분) */
 .trend-up { color: var(--ok); font-weight: 700; }
 .trend-down { color: var(--danger); font-weight: 700; }
@@ -364,7 +374,9 @@ def nav_menu(current):
     return ("<span class='navmenu'>"
             + item("/", "글 목록", "list") + " · "
             + item("/analysis", "분석", "analysis") + " · "
-            + item("/trends", "주제·시기 트렌드", "trends") + "</span>")
+            + item("/trends", "주제·시기 트렌드", "trends") + " · "
+            + item("/topics", "주제 검수", "topics") + " · "
+            + item("/data", "데이터", "data") + "</span>")
 
 
 def _comma(n):
@@ -1001,6 +1013,179 @@ def render_trends(conn):
 
 
 # ---------------------------------------------------------------------------
+# 화면 E — 데이터 (창고 현황 + 룰북 열람, 읽기 전용)
+# ---------------------------------------------------------------------------
+def render_data(conn):
+    """창고에 뭐가 얼마나 들었나(건강검진) + 우리 규칙(룰북) 열람. 원본 셀 재노출 안 함(불변2)."""
+    menu = nav_menu("data")
+    try:
+        one = lambda sql, p=(): conn.execute(sql, p).fetchone()[0]
+        n_total = one("SELECT COUNT(*) FROM posts")
+        n_kw = one("SELECT COUNT(*) FROM posts WHERE keyword IS NOT NULL")
+        n_ext = one("SELECT COUNT(*) FROM posts WHERE body_raw_path IS NOT NULL")
+        n_view = one("SELECT COUNT(*) FROM posts p JOIN reference_signals rs "
+                     "ON rs.post_id=p.post_id AND rs.collected_from_sheet=? "
+                     "WHERE rs.view_count IS NOT NULL", (AUTO_VIEW_MARK,))
+        sheets = conn.execute(
+            "SELECT COALESCE(source_sheet,'(미상)') s, COUNT(*) n FROM posts "
+            "GROUP BY source_sheet ORDER BY n DESC").fetchall()
+        n_cat = one("SELECT COUNT(*) FROM rulebook_categories")
+        n_ban = one("SELECT COUNT(*) FROM rulebook_banned_words")
+        n_pii = one("SELECT COUNT(*) FROM rulebook_pii_patterns")
+        cats = conn.execute(
+            "SELECT category_name, COALESCE(top_category,'-') top, "
+            "COALESCE(total_post_frequency,0) freq FROM rulebook_categories "
+            "ORDER BY freq DESC").fetchall()
+        bans = conn.execute(
+            "SELECT word, COALESCE(replacement,'-') rep FROM rulebook_banned_words "
+            "ORDER BY word").fetchall()
+        piis = conn.execute(
+            "SELECT name, COALESCE(description,'') d FROM rulebook_pii_patterns "
+            "ORDER BY name").fetchall()
+    except sqlite3.Error:
+        topbar = ("<div class='topbar'>" + menu + "<span class='t-title'>데이터</span></div>")
+        body = ("<div class='wrap'><div class='state'>데이터를 불러오지 못했습니다. "
+                "자산창고 파일을 먼저 만든 뒤 다시 열어주세요.</div></div>")
+        return page("데이터", topbar, body)
+
+    topbar = ("<div class='topbar'>" + menu + "<span class='t-title'>데이터</span>"
+              f"<span class='badge ok'>글 {_comma(n_total)}건</span></div>")
+
+    # 창고 현황 카드
+    def card(n, label):
+        return f"<div class='statcard'><div class='n'>{_comma(n)}</div><div class='l'>{esc(label)}</div></div>"
+    cards = ("<div class='statcards'>"
+             + card(n_total, "전체 글")
+             + card(n_kw, "주제(키워드) 있음")
+             + card(n_ext, "본문 추출완료")
+             + card(n_view, "조회수 확보(참고 신호)")
+             + "</div>")
+
+    # 출처별
+    sheet_rows = "".join(
+        "<div class='listrow static'>"
+        f"<div>{esc(s['s'])}</div><div class='num'>{_comma(s['n'])}</div></div>"
+        for s in sheets)
+    sheet_tbl = ("<div class='an10'><div class='tablewrap'>"
+                 "<div class='listhead'><div>출처(엑셀 시트)</div><div class='num'>글 수</div></div>"
+                 f"{sheet_rows}</div></div>")
+
+    warehouse = ("<h2 class='sec'>창고 현황<span class='secsub'>지금 창고에 든 것</span></h2>"
+                 f"{cards}{sheet_tbl}"
+                 "<p class='intro sub'>‘조회수 확보’는 추출로 조회수까지 받은 글입니다. "
+                 "조회수는 참고 신호이고, 대부분 공준모에서 나왔습니다.</p>")
+
+    # 룰북 열람
+    rb_cards = ("<div class='statcards'>"
+                + card(n_cat, "카테고리") + card(n_ban, "금지어")
+                + card(n_pii, "개인정보 패턴")
+                + "<div class='statcard'><div class='n'>–</div><div class='l'>팩트(미적재)</div></div>"
+                + "</div>")
+
+    def bullet_list(items, empty):
+        if not items:
+            return f"<p class='note-empty'>{esc(empty)}</p>"
+        return "<ul class='masklist'>" + "".join(items) + "</ul>"
+
+    cat_items = [f"<li><span>{esc(r['category_name'])}"
+                 f"<span class='secsub'>{esc(r['top'])}</span></span>"
+                 f"<span>글 {_comma(r['freq'])}</span></li>" for r in cats]
+    ban_items = [f"<li><span>{esc(r['word'])}</span><span>→ {esc(r['rep'])}</span></li>"
+                 for r in bans]
+    pii_items = [f"<li><span>{esc(r['name'])}</span>"
+                 f"<span class='secsub'>{esc(r['d'][:40])}</span></li>" for r in piis]
+
+    rulebook = ("<h2 class='sec'>룰북 열람<span class='secsub'>원고·마스킹이 따르는 우리 규칙"
+                "</span></h2>"
+                f"{rb_cards}"
+                "<div class='belowcols'>"
+                f"<div class='panel'><h2 class='sec'>카테고리 {n_cat}</h2>"
+                f"{bullet_list(cat_items, '카테고리가 없습니다.')}</div>"
+                f"<div class='panel'><h2 class='sec'>금지어 {n_ban}</h2>"
+                f"{bullet_list(ban_items, '금지어가 없습니다.')}</div>"
+                f"<div class='panel'><h2 class='sec'>개인정보 패턴 {n_pii}</h2>"
+                f"{bullet_list(pii_items, '패턴이 없습니다.')}</div>"
+                "</div>"
+                "<p class='intro sub'>‘팩트’(학점·응시자격 등 제도 수치)는 아직 창고에 없습니다 — "
+                "원고에 정확한 수치를 넣으려면 이 팩트 시트 적재가 다음 열쇠입니다.</p>")
+
+    body = f"<div class='wrap'>{warehouse}<div style='margin-top:32px'>{rulebook}</div></div>"
+    return page("데이터", topbar, body)
+
+
+# ---------------------------------------------------------------------------
+# 화면 F — 주제 묶음 검수 (D2, 읽기 전용: 후보만 보여주고 확정은 사람)
+# ---------------------------------------------------------------------------
+TOPIC_LIST_TOP = 60
+
+
+def render_topics(conn):
+    """정규화가 자동으로 묶은 주제를 사람이 확인하는 화면(D2). '같은 주제일 수 있는 후보'를
+    보여주되 합치지 않는다 — 확정 병합은 사람이 정하면 규칙(ALIAS)에 반영."""
+    menu = nav_menu("topics")
+    try:
+        counts = trends.topic_counts(conn)
+    except sqlite3.Error:
+        topbar = ("<div class='topbar'>" + menu + "<span class='t-title'>주제 검수</span></div>")
+        body = ("<div class='wrap'><div class='state'>주제를 불러오지 못했습니다. "
+                "자산창고 파일을 먼저 만든 뒤 다시 열어주세요.</div></div>")
+        return page("주제 검수", topbar, body)
+
+    topbar = ("<div class='topbar'>" + menu + "<span class='t-title'>주제 검수</span>"
+              f"<span class='badge ok'>주제 {_comma(len(counts))}개</span></div>")
+    if not counts:
+        body = ("<div class='wrap'><div class='state'>묶을 주제가 아직 없습니다. "
+                "창고에 글(키워드)이 있어야 합니다.</div></div>")
+        return page("주제 검수", topbar, body)
+
+    intro = (
+        "<p class='intro'>변형 키워드를 규칙으로 묶은 <b>주제</b>를 사람이 확인하는 화면입니다.</p>"
+        "<p class='intro sub'>아래 ‘같은 주제일 수 있는 후보’를 보고 <b>합쳐야 할 쌍</b>을 알려주시면 "
+        "규칙에 한 줄로 반영합니다. 자동으로 합치지 않아요 — 예: ‘심리상담사↔상담심리사’는 "
+        "글자만 비슷하지 다른 자격증이라 합치면 안 됩니다.</p>")
+
+    # near-중복 후보
+    import keyword_normalize as kn
+    cands = kn.near_duplicate_candidates(list(counts.items()))
+    if cands:
+        c_head = ("<div class='listhead'><div>주제 A</div><div class='num'>글 수</div>"
+                  "<div>주제 B</div><div class='num'>글 수</div><div>왜 후보인가</div></div>")
+        c_rows = "".join(
+            "<div class='listrow static'>"
+            f"<div>{esc(a)}</div><div class='num'>{_comma(ac)}</div>"
+            f"<div>{esc(b)}</div><div class='num'>{_comma(bc)}</div>"
+            f"<div>{esc(why)}</div></div>"
+            for a, b, ac, bc, why in cands)
+        sec_c = ("<h2 class='sec'>같은 주제일 수 있는 후보"
+                 f"<span class='secsub'>합칠지는 사람이 판단 · {len(cands)}쌍</span></h2>"
+                 f"<div class='an9'><div class='tablewrap'>{c_head}{c_rows}</div></div>")
+    else:
+        sec_c = ("<h2 class='sec'>같은 주제일 수 있는 후보</h2>"
+                 "<div class='state'>눈에 띄는 중복 후보가 없습니다.</div>")
+
+    # 전체 주제 목록(상위)
+    ordered = sorted(counts.items(), key=lambda x: -x[1])
+    shown = ordered[:TOPIC_LIST_TOP]
+    l_head = "<div class='listhead'><div>주제</div><div class='num'>글 수</div></div>"
+    l_rows = "".join(
+        "<div class='listrow static'>"
+        f"<div>{esc(t)}</div><div class='num'>{_comma(n)}</div></div>"
+        for t, n in shown)
+    more = (f"<p class='intro sub'>글 수 많은 순 상위 {TOPIC_LIST_TOP}개 (전체 {_comma(len(counts))}개).</p>"
+            if len(counts) > TOPIC_LIST_TOP else f"<p class='intro sub'>전체 {_comma(len(counts))}개.</p>")
+    sec_l = ("<h2 class='sec'>주제 목록<span class='secsub'>규칙이 묶은 결과</span></h2>"
+             f"<div class='an10'><div class='tablewrap'>{l_head}{l_rows}</div></div>{more}")
+
+    honest = ("<div class='honest'>이 화면은 읽기 전용입니다 — 여기서 바로 합치지 않습니다. "
+              "합칠 쌍을 정해 알려주시면 규칙(단일 출처)에 반영해 분석·트렌드에 함께 적용됩니다. "
+              "‘글 수 적은 변형이 큰 주제 옆에 붙어 있는지’를 위주로 보세요(예: 조사 ‘가’가 붙어 갈린 것).</div>")
+
+    body = (f"<div class='wrap'>{intro}{sec_c}"
+            f"<div style='margin-top:32px'>{sec_l}</div>{honest}</div>")
+    return page("주제 검수", topbar, body)
+
+
+# ---------------------------------------------------------------------------
 # HTTP 서버
 # ---------------------------------------------------------------------------
 def make_handler(db_path):
@@ -1024,6 +1209,10 @@ def make_handler(db_path):
                         qs.get("min_age", [None])[0] == "30"))
                 elif u.path == "/trends":
                     self._send_html(render_trends(conn))
+                elif u.path == "/topics":
+                    self._send_html(render_topics(conn))
+                elif u.path == "/data":
+                    self._send_html(render_data(conn))
                 elif u.path == "/post":
                     self._send_html(render_detail(conn, qs.get("id", [None])[0]))
                 elif u.path == "/img":
