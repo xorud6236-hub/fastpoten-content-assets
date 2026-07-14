@@ -61,11 +61,11 @@ class TestViewerInvariant(unittest.TestCase):
                          f"{PII_NAME}이 안내드립니다.\n{OPENCHAT}")
         # 경로는 ROOT 기준 join되므로 절대경로 저장(윈도우: 절대경로면 그대로 사용됨)
         conn.execute(
-            "INSERT INTO posts (post_id, title, cafe_name, board_name, staff_name, "
+            "INSERT INTO posts (post_id, title, keyword, cafe_name, board_name, staff_name, "
             "publish_date, content_length_type, extraction_status, "
             "body_raw_path, body_clean_path, body_pub_ref_path) "
-            "VALUES (21512, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("임상심리사 2급 응시자격", "공준모", "질문게시판", "김민지",
+            "VALUES (21512, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("임상심리사 2급 응시자격", "임상심리사2급 응시자격", "공준모", "질문게시판", "김민지",
              "2026-01-06", "medium", "성공(자동추출)",
              raw_path, clean_path, clean_path))
         # 문단: clean_text는 마스킹본(개인정보 없음), raw_text엔 원문 흔적(화면에 나오면 안 됨)
@@ -238,6 +238,26 @@ class TestViewerInvariant(unittest.TestCase):
             h = self._get(path)
             self.assertIn("참고 신호 분석", h)
 
+    # ---- 주제별 조회수(정규화) 섹션 + 트렌드 화면(추가분) ----
+    def test_analysis_has_topic_section(self):
+        # 변형 키워드를 주제로 묶는 '주제별 조회수' 섹션이 분석 화면에 있다
+        # (표본 1건이라 표는 비어도 섹션 제목은 항상 나온다)
+        self.assertIn("주제별 조회수", self._get("/analysis"))
+
+    def test_nav_has_trends_link(self):
+        # 상단 메뉴에 트렌드 화면 링크가 있다
+        self.assertIn("/trends", self._get("/analysis"))
+
+    def test_trends_renders_and_no_pii(self):
+        h = self._get("/trends")
+        self.assertIn("주제·시기 트렌드", h)
+        self.assertIn("발행 습관", h)              # 정직 박스(발행량≠검색수요)
+        self.assertNotIn("성과 등급", h)
+        # 불변 1 — 본문을 안 쓰는 화면이지만 회귀 방지로 PII 부재 확인
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+
 
 class TestAnalysisMath(unittest.TestCase):
     """분석 집계의 비자명 수치 로직(상관·세기 라벨) 자체검증 — 깨지면 실패."""
@@ -253,6 +273,65 @@ class TestAnalysisMath(unittest.TestCase):
         self.assertEqual(viewer.rel_label(0.2), "약한 관계")
         self.assertEqual(viewer.rel_label(-0.4), "어느 정도 관계")
         self.assertEqual(viewer.rel_label(0.7), "뚜렷한 관계")
+
+
+class TestKeywordNormalize(unittest.TestCase):
+    """정규화 단일 출처 — 변형이 한 주제로 묶이고, 급은 갈리고, 일반어는 None."""
+
+    def test_variants_merge_to_one_topic(self):
+        import keyword_normalize as kn
+        self.assertEqual(kn.normalize("사회복지사2급 취업"), "사회복지사2급")
+        self.assertEqual(kn.normalize("사회복지사2급자격증취득방법"), "사회복지사2급")
+        # 급(1급/2급)은 다른 주제로 유지 — 과병합 방지
+        self.assertNotEqual(kn.normalize("사회복지사2급"), kn.normalize("사회복지사1급"))
+
+    def test_alias_and_generic(self):
+        import keyword_normalize as kn
+        self.assertEqual(kn.normalize("미용종합면허증"), "종합미용면허증")  # 어순 동의어
+        self.assertEqual(kn.normalize("사이버대학교 학점은행제"), "사이버대학")  # 표기+꼬리말
+        self.assertIsNone(kn.normalize("학점은행제"))   # 일반어만 → 주제 없음
+        self.assertIsNone(kn.normalize(""))
+
+
+class TestTrendsMath(unittest.TestCase):
+    """시기 트렌드 집계(비중 기반 뜨는/식는·계절성·월내) 자체검증 — 순수 함수, DB 불필요."""
+
+    @staticmethod
+    def _rec(topic, y, m, d):
+        q = f"{y}-Q{(m - 1) // 3 + 1}"
+        dom = "early" if d <= 10 else ("mid" if d <= 20 else "late")
+        return dict(topic=topic, y=y, m=m, d=d, q=q, dom=dom)
+
+    def test_quarter_trend_rising_and_falling_by_share(self):
+        import trends
+        recs = []
+        # Q1: A 2건(20%) B 8건 / Q2: A 8건(80%) B 2건 → A는 비중↑, B는 비중↓
+        recs += [self._rec("A", 2025, 1, 5) for _ in range(2)]
+        recs += [self._rec("B", 2025, 1, 5) for _ in range(8)]
+        recs += [self._rec("A", 2025, 4, 5) for _ in range(8)]
+        recs += [self._rec("B", 2025, 4, 5) for _ in range(2)]
+        qt = trends.quarter_trends(recs, min_topic=2, min_quarter=2, top=5)
+        self.assertEqual(qt["rising"][0]["topic"], "A")
+        self.assertEqual(qt["falling"][0]["topic"], "B")
+        self.assertGreater(qt["rising"][0]["slope"], 0)
+        self.assertLess(qt["falling"][0]["slope"], 0)
+
+    def test_seasonality_peak_month(self):
+        import trends
+        recs = ([self._rec("S", 2026, 4, 5) for _ in range(9)]
+                + [self._rec("S", 2026, 7, 5) for _ in range(1)])
+        top = trends.seasonality(recs, min_topic=2, top=3)
+        self.assertEqual(top[0]["topic"], "S")
+        self.assertEqual(top[0]["peak_month"], 4)
+        self.assertAlmostEqual(top[0]["peak_pct"], 90.0, places=1)
+
+    def test_intramonth_late_skew(self):
+        import trends
+        recs = ([self._rec("L", 2026, 4, 25) for _ in range(8)]
+                + [self._rec("L", 2026, 4, 5) for _ in range(2)])
+        im = trends.intramonth(recs, min_topic=2, top=3)
+        self.assertEqual(im["late"][0]["topic"], "L")
+        self.assertAlmostEqual(im["late"][0]["late_pct"], 80.0, places=1)
 
 
 if __name__ == "__main__":

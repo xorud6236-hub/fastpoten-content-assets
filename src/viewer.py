@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db import DEFAULT_DB_PATH, ROOT_DIR, get_connection  # noqa: E402
 import masking  # noqa: E402
+import trends  # noqa: E402  (시기별 주제 트렌드·주제별 조회수 — 정규화는 keyword_normalize 단일 출처)
 
 TOKENS_PATH = os.path.join(ROOT_DIR, "templates", "tokens.css")
 CORPUS_DIR = os.path.join(ROOT_DIR, "corpus")   # 이미지 서빙 허용 루트(밖은 차단)
@@ -328,7 +329,17 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
             min-width: 620px; }
 .an3 .listhead, .an3 .listrow { grid-template-columns: 2fr 1fr 1.3fr; min-width: 420px; }
 .an4 .listhead, .an4 .listrow { grid-template-columns: 2fr 1fr 1fr 1fr; min-width: 480px; }
-/* 누를 수 없는 집계 줄(섹션 2·3·4) — hover 강조·커서 없음 */
+/* 주제별 조회수(정규화) — 주제·발행·추출·평균조회·합계·하루당 */
+.an5 .listhead, .an5 .listrow { grid-template-columns: 2fr 0.8fr 0.8fr 1fr 1fr 1fr;
+            min-width: 680px; }
+/* 트렌드 표 — 분기(주제·총·시작%·최근%·추세) / 계절(주제·총·최다월·쏠림%) / 월내(주제·초·중·말·총) */
+.an6 .listhead, .an6 .listrow { grid-template-columns: 2fr 0.8fr 1fr 1fr 1.1fr; min-width: 640px; }
+.an7 .listhead, .an7 .listrow { grid-template-columns: 2fr 0.9fr 1fr 1fr; min-width: 520px; }
+.an8 .listhead, .an8 .listrow { grid-template-columns: 2fr 0.8fr 0.8fr 0.8fr 0.8fr; min-width: 560px; }
+/* 추세 방향 글자색(색만이 아니라 화살표·부호로도 구분) */
+.trend-up { color: var(--ok); font-weight: 700; }
+.trend-down { color: var(--danger); font-weight: 700; }
+/* 누를 수 없는 집계 줄(섹션 2·3·4·트렌드) — hover 강조·커서 없음 */
 .listrow.static { cursor: default; }
 .listrow.static:hover { background: var(--paper); }
 """
@@ -346,13 +357,14 @@ def page(title, topbar_html, body_html):
 
 
 def nav_menu(current):
-    """상단 띠 왼쪽 화면 이동 메뉴(글 목록 · 분석). 현재 화면은 here(굵게·밑줄)."""
+    """상단 띠 왼쪽 화면 이동 메뉴(글 목록 · 분석 · 주제·시기 트렌드). 현재 화면은 here(굵게·밑줄)."""
     def item(href, label, key):
         cls = " class='here'" if current == key else ""
         return f"<a href='{href}'{cls}>{label}</a>"
     return ("<span class='navmenu'>"
             + item("/", "글 목록", "list") + " · "
-            + item("/analysis", "분석", "analysis") + "</span>")
+            + item("/analysis", "분석", "analysis") + " · "
+            + item("/trends", "주제·시기 트렌드", "trends") + "</span>")
 
 
 def _comma(n):
@@ -719,6 +731,50 @@ def render_analysis(conn, sort="views", min_age=False):
             f"<div class='an1'><div class='tablewrap'>{s1_head}{''.join(s1_rows)}</div></div>"
             f"{s1_more}")
 
+    # --- 섹션 1.5: 주제별 조회수(정규화) — 변형 키워드를 주제로 묶어 과소집계 해소 ---
+    #   위 기간 필터와 별개로, 추출·조회수 있는 글 전체를 주제로 묶는다(keyword_normalize 단일 출처).
+    #   '발행'은 posts 전체 같은 주제 글 수 → 적게 썼는데 잘 된/많이 썼는데 안 된 주제가 보인다.
+    try:
+        tperf = trends.topic_performance(conn, datetime.date.today())
+    except sqlite3.Error:
+        tperf = []
+    if tperf:
+        # ★ 표본 편중 경고(정직) — 이 조회수 표본은 대부분 한 출처(공준모)라 주제 간 공정 비교 아님.
+        #   로드맵 §2·§4가 필수로 지정한 표기. 편중이 뚜렷할 때(60%+)만 띄운다.
+        skew_sheet, skew_pct, skew_tot = trends.topic_sample_skew(conn)
+        skew_warn = ""
+        if skew_pct >= 60 and skew_sheet:
+            skew_warn = (
+                "<div class='honest'>⚠ 이 표의 조회수는 표본 "
+                f"{_comma(skew_tot)}건 중 <b>{skew_pct:.0f}%가 ‘{esc(skew_sheet)}’ 한 곳</b>에서 "
+                "나온 글입니다. 다른 분류는 추출글이 적어 거의 안 잡혀요. <b>서로 다른 주제를 "
+                "공정하게 비교하는 표가 아직 아닙니다</b> — ‘더 써볼 후보’는 참고로만 보고, "
+                "주제별 표본이 고르게 쌓인 뒤 판단하세요.</div>")
+        t_head = ("<div class='listhead'><div>주제</div><div class='num'>발행 글수</div>"
+                  "<div class='num'>추출·조회 글수</div><div class='num'>평균 조회수</div>"
+                  "<div class='num'>합계 조회수</div><div class='num'>평균 하루당</div></div>")
+        t_rows = []
+        for it in tperf:
+            avpd = f"{it['avg_vpd']:.1f}" if it["avg_vpd"] is not None else "-"
+            t_rows.append(
+                "<div class='listrow static'>"
+                f"<div>{esc(it['topic'])}</div>"
+                f"<div class='num'>{_comma(it['published'])}</div>"
+                f"<div class='num'>{it['extracted']}</div>"
+                f"<div class='num'>{_comma(round(it['avg_views']))}</div>"
+                f"<div class='num'>{_comma(it['sum_views'])}</div>"
+                f"<div class='num'>{avpd}</div></div>")
+        sect = ("<h2 class='sec'>주제별 조회수 <span class='secsub'>변형 키워드를 하나의 주제로 "
+                "묶어 봄 · 추출글 2건+ · 평균 조회수 높은 순</span></h2>"
+                "<p class='intro sub'>‘발행 글수’는 우리가 그 주제로 쓴 전체 글, ‘추출·조회 글수’는 "
+                "그중 조회수를 확보한 글입니다. <b>발행은 적은데 평균 조회수가 높은 주제</b>가 "
+                "‘더 써볼 후보’예요. (조회수는 참고 신호 — 자사 채널에서 재검증 필요)</p>"
+                f"{skew_warn}"
+                f"<div class='an5'><div class='tablewrap'>{t_head}{''.join(t_rows)}</div></div>")
+    else:
+        sect = ("<h2 class='sec'>주제별 조회수</h2><div class='state'>"
+                "주제로 묶어 비교할 글이 아직 부족합니다.</div>")
+
     # --- 섹션 2: 키워드별 조회수(2건+) ---
     gk = defaultdict(list)
     for r in used:
@@ -745,8 +801,8 @@ def render_analysis(conn, sort="views", min_age=False):
                 f"<div class='num'>{_comma(round(av))}</div>"
                 f"<div class='num'>{_comma(sm)}</div>"
                 f"<div class='num'>{avpd_cell}</div></div>")
-        sec2 = (f"<h2 class='sec'>키워드별 조회수<span class='secsub'>글이 2건 이상인 "
-                f"키워드만 · 평균 조회수 높은 순 상위 {SECTION2_TOP}</span></h2>"
+        sec2 = (f"<h2 class='sec'>원본 키워드별 조회수 <span class='secsub'>묶기 전 원본 키워드 "
+                f"그대로(참고) · 2건+ · 평균 조회수 높은 순 상위 {SECTION2_TOP}</span></h2>"
                 f"<div class='an2'><div class='tablewrap'>{k_head}{''.join(k_rows)}</div></div>")
     else:
         sec2 = ("<h2 class='sec'>키워드별 조회수</h2><div class='state'>"
@@ -805,10 +861,132 @@ def render_analysis(conn, sort="views", min_age=False):
             f"{cmp_head}{cmp_rows}</div></div>{honest}")
 
     body = (f"<div class='wrap'>{intro}{controls}{sec1}"
+            f"<div style='margin-top:32px'>{sect}</div>"
             f"<div style='margin-top:32px'>{sec2}</div>"
             f"<div style='margin-top:32px'>{sec3}</div>"
             f"<div style='margin-top:32px'>{sec4}</div></div>")
     return page("참고 신호 분석", topbar, body)
+
+
+# ---------------------------------------------------------------------------
+# 화면 D — 주제·시기 트렌드 (전체 글의 작성일 기준, 읽기 전용)
+# ---------------------------------------------------------------------------
+def render_trends(conn):
+    """시기별로 발행 '비중'이 뜨는/식는 주제 + 월별 계절성 + 월초·중순·말 분포.
+    전체 posts의 keyword+publish_date만 사용(추출 불필요). 조회수 아님 — 발행량 기준."""
+    topbar_menu = nav_menu("trends")
+    try:
+        recs = trends.load_topic_dates(conn)
+    except sqlite3.Error:
+        topbar = ("<div class='topbar'>" + topbar_menu
+                  + "<span class='t-title'>주제·시기 트렌드</span></div>")
+        body = ("<div class='wrap'><div class='state'>트렌드를 불러오지 못했습니다. "
+                "자산창고 파일을 먼저 만든 뒤 다시 열어주세요.</div></div>")
+        return page("주제·시기 트렌드", topbar, body)
+
+    topbar = ("<div class='topbar'>" + topbar_menu
+              + "<span class='t-title'>주제·시기 트렌드</span>"
+              f"<span class='badge ok'>대상 {_comma(len(recs))}건</span></div>")
+    if not recs:
+        body = ("<div class='wrap'><div class='state'>작성일이 있는 글이 아직 없습니다."
+                "</div></div>")
+        return page("주제·시기 트렌드", topbar, body)
+
+    intro = (
+        "<p class='intro'>우리 카페 글을 주제로 묶어, <b>시기별로 발행 비중이 뜨거나 식는 "
+        "주제</b>와 계절성·월내 분포를 봅니다.</p>"
+        "<p class='intro sub'>‘비중’으로 봅니다 — 최근일수록 전체 발행량 자체가 늘어(2026 집중), "
+        "원시 건수는 대부분 증가하기 때문. 비중을 보면 ‘상대적으로’ 뜨는/식는 주제만 남습니다.</p>")
+
+    # --- 분기별 뜨는/식는 ---
+    qt = trends.quarter_trends(recs)
+    qspan = (f"{qt['quarters'][0]} ~ {qt['quarters'][-1]}" if qt["quarters"] else "-")
+
+    def trend_table(items, up):
+        head = ("<div class='listhead'><div>주제</div><div class='num'>총 글수</div>"
+                "<div class='num'>시작 비중</div><div class='num'>최근 비중</div>"
+                "<div class='num'>추세</div></div>")
+        rows = []
+        for it in items:
+            arrow = "▲" if up else "▼"
+            cls = "trend-up" if up else "trend-down"
+            rows.append(
+                "<div class='listrow static'>"
+                f"<div>{esc(it['topic'])}</div>"
+                f"<div class='num'>{_comma(it['total'])}</div>"
+                f"<div class='num'>{it['first_pct']:.1f}%</div>"
+                f"<div class='num'>{it['last_pct']:.1f}%</div>"
+                f"<div class='num {cls}'>{arrow} {it['slope']:+.2f}%/분기</div></div>")
+        return f"<div class='an6'><div class='tablewrap'>{head}{''.join(rows)}</div></div>"
+
+    if qt["rising"] or qt["falling"]:
+        sec_q = (f"<h2 class='sec'>분기별 뜨는·식는 주제<span class='secsub'>{esc(qspan)} · "
+                 "비중=그 분기 전체 글 중 % · 40건+ 주제만</span></h2>"
+                 "<p class='intro sub'>▲ 최근 비중이 오르는 주제(더 밀고 있음) / "
+                 "▼ 비중이 빠지는 주제.</p>"
+                 f"{trend_table(qt['rising'], True)}"
+                 "<p class='intro sub' style='margin-top:12px'>▼ 비중이 식는 주제</p>"
+                 f"{trend_table(qt['falling'], False)}")
+    else:
+        sec_q = ("<h2 class='sec'>분기별 뜨는·식는 주제</h2><div class='state'>"
+                 "분기별 비교에 쓸 물량이 아직 부족합니다.</div>")
+
+    # --- 월별 계절성 ---
+    seas = trends.seasonality(recs)
+    if seas:
+        s_head = ("<div class='listhead'><div>주제</div><div class='num'>총 글수</div>"
+                  "<div class='num'>가장 많이 쓴 달</div><div class='num'>그 달 비중</div></div>")
+        s_rows = "".join(
+            "<div class='listrow static'>"
+            f"<div>{esc(it['topic'])}</div><div class='num'>{_comma(it['total'])}</div>"
+            f"<div class='num'>{it['peak_month']}월</div>"
+            f"<div class='num'>{it['peak_pct']:.0f}%</div></div>"
+            for it in seas)
+        sec_s = ("<h2 class='sec'>월별 계절성<span class='secsub'>특정 달에 쏠린 주제 · "
+                 "쏠림 큰 순 상위 10</span></h2>"
+                 "<p class='intro sub'>자격증은 시험·접수 일정이 있어 특정 달에 발행이 몰립니다. "
+                 "수요 정점보다 앞서 쓰려면 이 달 <b>한두 달 전</b>이 후보예요.</p>"
+                 f"<div class='an7'><div class='tablewrap'>{s_head}{s_rows}</div></div>")
+    else:
+        sec_s = ""
+
+    # --- 월초/중순/말 ---
+    im = trends.intramonth(recs)
+    base = im["baseline"]
+
+    def dom_table(items):
+        head = ("<div class='listhead'><div>주제</div><div class='num'>월초(1-10)</div>"
+                "<div class='num'>중순(11-20)</div><div class='num'>월말(21-31)</div>"
+                "<div class='num'>총 글수</div></div>")
+        rows = "".join(
+            "<div class='listrow static'>"
+            f"<div>{esc(it['topic'])}</div>"
+            f"<div class='num'>{it['early_pct']:.0f}%</div>"
+            f"<div class='num'>{it['mid_pct']:.0f}%</div>"
+            f"<div class='num'>{it['late_pct']:.0f}%</div>"
+            f"<div class='num'>{_comma(it['total'])}</div></div>"
+            for it in items)
+        return f"<div class='an8'><div class='tablewrap'>{head}{rows}</div></div>"
+
+    sec_d = ("<h2 class='sec'>월초·중순·말 분포<span class='secsub'>주제를 월내 어느 시기에 "
+             "발행했나</span></h2>"
+             f"<p class='intro sub'>전체 기준선: 월초 {base[0]:.0f}% · 중순 {base[1]:.0f}% · "
+             f"월말 {base[2]:.0f}%. 아래는 기준선보다 한쪽으로 치우친 주제입니다.</p>"
+             "<p class='intro sub' style='margin-top:8px'>월초에 몰아 쓴 주제</p>"
+             f"{dom_table(im['early'])}"
+             "<p class='intro sub' style='margin-top:12px'>월말에 몰아 쓴 주제</p>"
+             f"{dom_table(im['late'])}")
+
+    honest = ("<div class='honest'>이 화면은 <b>“우리가 언제 얼마나 발행했나”(발행 습관)</b>입니다. "
+              "사람들이 언제 더 <b>검색</b>하는지(수요 타이밍)가 아닙니다. 수요 정점은 네이버 "
+              "데이터랩 같은 외부 트렌드로 겹쳐 봐야 확정할 수 있고, 진짜 성과는 자사 채널 실측입니다. "
+              "표본도 최근(2025~2026)에 치우쳐 있어 ‘발견’이지 ‘확정’이 아닙니다.</div>")
+
+    body = (f"<div class='wrap'>{intro}{sec_q}"
+            f"<div style='margin-top:32px'>{sec_s}</div>"
+            f"<div style='margin-top:32px'>{sec_d}</div>"
+            f"{honest}</div>")
+    return page("주제·시기 트렌드", topbar, body)
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +1011,8 @@ def make_handler(db_path):
                     self._send_html(render_analysis(
                         conn, qs.get("sort", ["views"])[0],
                         qs.get("min_age", [None])[0] == "30"))
+                elif u.path == "/trends":
+                    self._send_html(render_trends(conn))
                 elif u.path == "/post":
                     self._send_html(render_detail(conn, qs.get("id", [None])[0]))
                 elif u.path == "/img":
