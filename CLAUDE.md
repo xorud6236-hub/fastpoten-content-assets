@@ -80,7 +80,7 @@
   - C. CA-4 린터(masking.py 재사용, 결정 불요 — 즉시 착수 가능)
 - [ ] 이후: docs/개발기획서-v2.md §트랙 표 순서
 - 백로그: BACKLOG.md
-- **데이터 동기화(2026-07-14~)**: data/·corpus/는 OneDrive\fastpoten-data 에 두고 프로젝트엔 junction 연결(개인정보라 공개 저장 금지, 내 OneDrive만). 새 PC에서 1회 `powershell -ExecutionPolicy Bypass -File setup_data_link.ps1` → OneDrive 동기화 후 뷰어 켜기. **규칙: 한 번에 한 PC만, PC 바꾸기 전 뷰어/추출 끄고 OneDrive 초록체크 확인**(동시 사용 시 SQLite 손상 위험). corpus는 추출할수록 커지니 OneDrive 용량(무료 5GB) 주의.
+- **데이터 동기화(2026-07-14~)**: data/·corpus/는 구글드라이브(G:\내 드라이브\fastpoten-data)에 두고 프로젝트엔 junction 연결(개인정보라 공개 저장 금지, 내 구글드라이브만). 사전: Google Drive for Desktop 설치·로그인. 새 PC에서 1회 `powershell -ExecutionPolicy Bypass -File setup_data_link.ps1`(볼륨명 'Google Drive' 자동 감지) → 동기화 후 뷰어 켜기. **규칙: 한 번에 한 PC만, PC 바꾸기 전 뷰어/추출 끄고 구글드라이브 동기화 완료 확인**(동시 사용 시 SQLite 손상 위험). corpus는 추출할수록 커지니 용량(무료 15GB) 주의. 구글드라이브 폴더는 '오프라인 사용 가능'으로 두기.
 - 새 PC에서 데이터부터 새로 만들 때(동기화 안 쓸 경우): `python src/db.py` → `python src/load_rulebook.py` → `python src/ingest_excel.py` → 테스트. (data/는 git 제외)
 
 ## 기록 파일
