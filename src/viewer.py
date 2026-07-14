@@ -332,8 +332,7 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 /* 주제별 조회수(정규화) — 주제·발행·추출·평균조회·합계·하루당 */
 .an5 .listhead, .an5 .listrow { grid-template-columns: 2fr 0.8fr 0.8fr 1fr 1fr 1fr;
             min-width: 680px; }
-/* 트렌드 표 — 분기(주제·총·시작%·최근%·추세) / 계절(주제·총·최다월·쏠림%) / 월내(주제·초·중·말·총) */
-.an6 .listhead, .an6 .listrow { grid-template-columns: 2fr 0.8fr 1fr 1fr 1.1fr; min-width: 640px; }
+/* 트렌드 표 — 계절(주제·총·최다월·쏠림%) / 월내(주제·초·중·말·총) */
 .an7 .listhead, .an7 .listrow { grid-template-columns: 2fr 0.9fr 1fr 1fr; min-width: 520px; }
 .an8 .listhead, .an8 .listrow { grid-template-columns: 2fr 0.8fr 0.8fr 0.8fr 0.8fr; min-width: 560px; }
 /* 주제 검수 — near중복 후보(주제A·글수·주제B·글수·사유) / 주제 목록(주제·글수) */
@@ -367,9 +366,6 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .hm-t .hm-tot { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
 .hm-c { min-height: 26px; display: flex; align-items: center; justify-content: center;
         font-size: 11px; color: var(--ink); border-radius: 3px; border: 1px solid var(--line); }
-/* 추세 방향 글자색(색만이 아니라 화살표·부호로도 구분) */
-.trend-up { color: var(--ok); font-weight: 700; }
-.trend-down { color: var(--danger); font-weight: 700; }
 /* 누를 수 없는 집계 줄(섹션 2·3·4·트렌드) — hover 강조·커서 없음 */
 .listrow.static { cursor: default; }
 .listrow.static:hover { background: var(--paper); }
@@ -905,7 +901,7 @@ def render_analysis(conn, sort="views", min_age=False):
 # 화면 D — 주제·시기 트렌드 (전체 글의 작성일 기준, 읽기 전용)
 # ---------------------------------------------------------------------------
 def render_trends(conn):
-    """시기별로 발행 '비중'이 뜨는/식는 주제 + 월별 계절성 + 월초·중순·말 분포.
+    """월별 비중 히트맵(뜨는/식는 주제) + 월별 계절성 + 월초·중순·말 분포.
     전체 posts의 keyword+publish_date만 사용(추출 불필요). 조회수 아님 — 발행량 기준."""
     topbar_menu = nav_menu("trends")
     try:
