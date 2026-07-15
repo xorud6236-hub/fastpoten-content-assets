@@ -367,6 +367,11 @@ def save_inbox(slug, body_text, meta):
 # ---------------------------------------------------------------------------
 # 라이브 fetch (Playwright) — 유일한 외부 접속부. 나머지는 오프라인 테스트 가능.
 # ---------------------------------------------------------------------------
+# 본문 컨테이너 '출현 대기' 전용 셀렉터. 아래 query_selector의 2단 폴백(article_viewer 안쪽
+# 우선)과 선택 우선순위가 다르다(콤마는 문서순 첫 매치) — 존재 확인용이니 병합하지 말 것.
+BODY_WAIT_SELECTOR = "div.article_viewer div.se-main-container, div.se-main-container"
+
+
 def fetch_article_html(url, timeout=30000):
     """공개 카페 글을 열어 (html, page_text, body_html) 반환. Playwright 필요(새 의존성).
 
@@ -374,8 +379,11 @@ def fetch_article_html(url, timeout=30000):
     - body_html: 프레임 안 div.article_viewer > div.se-main-container 서브트리를 DOM으로 정확히 떠
       본문 전용으로 반환(바깥 댓글·프로필·관련글·UI가 구조적으로 배제됨). 못 찾으면 None
       → parse_article_html이 html에서 balanced-div 스캔으로 폴백.
+    대기: 프레임은 빈 문서로도 'loaded'가 되므로 load_state가 아니라 본문 컨테이너
+      (BODY_SELECTOR)가 나타날 때까지 기다린다(최대 15초). 안 나타나도 그 시점 내용을
+      그대로 반환 → 삭제/비공개 글은 page_text 기반 classify_failure가 사유를 가린다.
     로그인/계정정보를 다루지 않음(불변 2) — 전체공개 페이지만 읽는다.
-    라이브 셀렉터(iframe 이름·se-* class)는 네이버 구조 변경 시 튜닝 필요할 수 있음(리뷰 주목).
+    라이브 셀렉터(iframe 이름·se-* class·BODY_SELECTOR)는 네이버 구조 변경 시 튜닝 필요할 수 있음(리뷰 주목).
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -393,16 +401,27 @@ def fetch_article_html(url, timeout=30000):
             html = page.content()
             body_html = None
             # 카페 본문은 iframe(id/name 'cafe_main') 안에 있는 경우가 많다.
+            # 단 회원전용 카페는 같은 프레임에 글 대신 카페 소개(MyCafeIntro)를 띄운다 —
+            # 그걸 본문으로 착각해 기다리지 않는다(소개문이 본문으로 저장되면 불변 4로 영구 고정).
             frame = None
             for f in page.frames:
                 fu = f.url or ""
+                if "MyCafeIntro" in fu:
+                    continue
                 if f.name == "cafe_main" or "/articles/" in fu or "ArticleRead" in fu:
                     frame = f
                     break
             scope = frame if frame is not None else page
             if frame is not None:
                 try:
-                    frame.wait_for_load_state("domcontentloaded", timeout=timeout)
+                    # 프레임은 빈 문서 상태로도 이미 'loaded'라 load_state 대기는 즉시 반환된다.
+                    # → 본문 컨테이너가 실제로 채워질 때까지 기다린다(카페 본문은 늦게 주입됨).
+                    try:
+                        frame.wait_for_selector(BODY_WAIT_SELECTOR, timeout=min(timeout, 15000))
+                    except Exception as e:
+                        # 끝내 안 나타남(삭제·비공개 등) → 아래 폴백에서 사유 분류.
+                        # 타임아웃인지 다른 실패인지 구분되게 종류만 남긴다(배치 로그 진단용).
+                        print(f"  [본문대기 실패:{type(e).__name__}] {url}", flush=True)
                     html = frame.content()
                     page_text = frame.inner_text("body")
                 except Exception:
