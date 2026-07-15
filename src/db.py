@@ -220,6 +220,60 @@ SCHEMA_STATEMENTS = [
         source_version TEXT NOT NULL
     )""",
 
+    # ------------------------------------------------------------------
+    # 팩트 룰북 (CA-6) — `② 팩트 룰북` 시트: 공통 팩트 + 개별 팩트
+    #   - 한 테이블 + fact_kind 구분 + 열 합집합 (계획 §4: 검수·화면·프롬프트 주입이 한 경로)
+    #   - ★ 식별키는 엑셀 No.가 아니라 사람이 부르는 이름:
+    #       공통 = 카테고리명 / 개별 = 상품·키워드명  → UNIQUE(fact_kind, item_name)
+    #     (No.는 재번호되면 어긋나므로 참고용 컬럼일 뿐)
+    #   - 내용 칸은 엑셀 열 그대로 텍스트 보관. FAQ TOP3처럼 한 칸에 여러 개가 든 셀도 쪼개지 않음.
+    #   - review_status 기본값 '미확인' (계획 전제: AI 초안이라 아직 아무도 확인하지 않음)
+    # ------------------------------------------------------------------
+    """CREATE TABLE IF NOT EXISTS rulebook_facts (
+        fact_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_kind          TEXT NOT NULL CHECK (fact_kind IN ('공통','개별')),
+        excel_no           INTEGER,   -- 엑셀 No.(참고용 — 식별키 아님)
+        division           TEXT,      -- 엑셀 '구분'
+        category           TEXT,      -- 공통: 카테고리 / 개별: 연결 카테고리
+        item_name          TEXT NOT NULL,  -- ★ 식별키: 공통=카테고리명 / 개별=상품·키워드명
+        -- 공통 팩트 칸 (SECTION A 열 그대로)
+        requirement        TEXT,      -- 응시/취득 요건
+        credits            TEXT,      -- 필요 학점
+        duration           TEXT,      -- 예상 소요 기간
+        shortcut           TEXT,      -- 기간 단축 방법
+        faq_top3           TEXT,      -- 자주 묻는 질문 TOP3 (한 칸에 3개 — 쪼개지 않음)
+        cautions           TEXT,      -- 주의사항 / 흔한 오해
+        -- 공통·개별 공용
+        caution_memo       TEXT,      -- 주의메모(시점/예외)
+        -- 개별 팩트 칸 (SECTION B 열 그대로)
+        core_fact          TEXT,      -- 핵심 팩트
+        path_by_education  TEXT,      -- 학력별 경로 요약
+        emphasis           TEXT,      -- 글 작성 시 강조포인트
+        use_priority       TEXT,      -- 사용 우선순위
+        remarks            TEXT,      -- 비고
+        -- 검수 (계획 D2: 항목 통째 / D3: 상태 3개)
+        review_status      TEXT NOT NULL DEFAULT '미확인'
+                           CHECK (review_status IN ('미확인','확인함','보류')),
+        reviewed_at        TEXT,
+        review_note        TEXT,
+        -- 엑셀 원본 지문 — 재적재 때 '엑셀이 바뀐 것 같은 항목' 감지용(덮어쓰기 안 함)
+        source_fingerprint TEXT,
+        source_version     TEXT NOT NULL,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        UNIQUE (fact_kind, item_name)
+    )""",
+
+    # 팩트 수정 이력 — 되돌리기 + '엑셀 원본이 뭐였지'(첫 수정의 old_value가 엑셀 원본)
+    """CREATE TABLE IF NOT EXISTS rulebook_fact_edits (
+        edit_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_id    INTEGER NOT NULL REFERENCES rulebook_facts(fact_id),
+        field_name TEXT NOT NULL,   -- 고친 칸(rulebook_facts 컬럼명)
+        old_value  TEXT,
+        new_value  TEXT,
+        edited_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    )""",
+
     # 개인정보·직원 식별정보 탐지 패턴 (v9 §8·§8-2 정의 — 정제 마스킹·린터 공용)
     """CREATE TABLE IF NOT EXISTS rulebook_pii_patterns (
         pattern_id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,6 +298,7 @@ INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_post_images_hash ON post_images(image_hash)",
     "CREATE INDEX IF NOT EXISTS idx_extraction_logs_post_id ON extraction_logs(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_keywords_category ON keywords(category)",
+    "CREATE INDEX IF NOT EXISTS idx_rulebook_fact_edits_fact_id ON rulebook_fact_edits(fact_id)",
 ]
 
 # 자산 테이블 + 룰북 테이블 전체 이름 (테스트·검증용)
@@ -252,6 +307,7 @@ EXPECTED_TABLES = [
     "post_paragraphs", "post_images", "keywords", "post_keywords",
     "extraction_logs", "post_embeddings", "review_pairs",
     "rulebook_categories", "rulebook_banned_words", "rulebook_pii_patterns",
+    "rulebook_facts", "rulebook_fact_edits",
 ]
 
 
