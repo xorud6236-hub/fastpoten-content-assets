@@ -2,6 +2,7 @@ data/
 corpus/
 inbox/
 out/
+scratchpad/
 __pycache__/
 *.pyc
 .env
