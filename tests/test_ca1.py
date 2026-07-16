@@ -53,6 +53,19 @@ class TestSchema(unittest.TestCase):
             self.assertNotIn("performance_grade", cols, table)
             self.assertNotIn("length_penalty", cols, table)
 
+    def test_posts_has_mask_count_columns(self):
+        # 가림 건수 저장 자리(ensure 패턴으로 추가) — 건수와 '어떤 규칙으로 셌는지'(지문)
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(posts)")}
+        self.assertIn("mask_count", cols)
+        self.assertIn("mask_rules_fingerprint", cols)
+
+    def test_ensure_columns_survive_rerun(self):
+        # 불변 9: 다시 돌려도 칸이 사라지거나 중복되지 않음
+        db.init_db(self.conn)
+        cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(posts)")]
+        self.assertEqual(cols.count("mask_count"), 1)
+        self.assertEqual(cols.count("mask_rules_fingerprint"), 1)
+
     def test_ensure_column_idempotent(self):
         db.ensure_column(self.conn, "staff", "test_col", "TEXT")
         db.ensure_column(self.conn, "staff", "test_col", "TEXT")  # 재실행 안전

@@ -286,6 +286,19 @@ SCHEMA_STATEMENTS = [
     )""",
 ]
 
+# 나중에 붙인 칸 — 기존 DB에도 멱등하게 추가(불변 9: 추가만. 삭제·변경 없음).
+# CREATE TABLE에 넣지 않고 여기 모으는 이유: 새 DB·기존 DB가 같은 경로로 같은 결과가 된다.
+ENSURE_COLUMNS = [
+    # 글목록이 글마다 본문 파일을 열어 개인정보를 다시 세지 않도록 '가림 건수'를 저장한다.
+    #   ★ 불변 1: 저장하는 건 건수(정수)와 규칙 지문뿐 — 원본 문자열(전화번호·이름)은 넣지 않는다.
+    #   ★ 불변 4: 본문 텍스트 칸이 아니다(본문은 여전히 파일에만, posts엔 경로만).
+    ("posts", "mask_count", "INTEGER"),
+    # 그 건수를 '어떤 가림 규칙으로 셌는지'(masking.rules_fingerprint).
+    # 지금 규칙과 다르면 저장된 건수는 옛 숫자 → 화면은 숫자를 쓰지 않고 '다시 세기 필요'로 둔다
+    # (자동 재계산 안 함 — 뷰어는 읽기 전용. 다시 세기는 src/count_masks.py 한 번).
+    ("posts", "mask_rules_fingerprint", "TEXT"),
+]
+
 INDEX_STATEMENTS = [
     # v9 설계노트 5: 생성 단계 RAG 대비 — category·usage_tags·staff_name 인덱스 선확보
     "CREATE INDEX IF NOT EXISTS idx_posts_staff_name ON posts(staff_name)",
@@ -315,6 +328,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     """전체 스키마 생성(멱등). 여러 번 실행해도 안전."""
     for stmt in SCHEMA_STATEMENTS:
         conn.execute(stmt)
+    for table, column, decl in ENSURE_COLUMNS:
+        ensure_column(conn, table, column, decl)
     for stmt in INDEX_STATEMENTS:
         conn.execute(stmt)
     conn.commit()

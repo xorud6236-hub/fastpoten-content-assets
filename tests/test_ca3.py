@@ -64,6 +64,60 @@ class TestMasking(unittest.TestCase):
         self.assertEqual(hits, [])
 
 
+class TestRulesFingerprint(unittest.TestCase):
+    """규칙 지문 — 저장해 둔 가림 건수가 아직 유효한지 판단하는 근거."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dbp = _patterns_db()
+
+    def setUp(self):
+        self.conn = db.get_connection(self.dbp)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _fp(self, names):
+        """staff 이름 목록을 그 순서대로 넣고 지문 계산."""
+        self.conn.execute("DELETE FROM staff")
+        for n in names:
+            self.conn.execute("INSERT INTO staff (staff_name) VALUES (?)", (n,))
+        self.conn.commit()
+        return masking.rules_fingerprint(self.conn)
+
+    def test_same_rules_same_fingerprint(self):
+        self.assertEqual(self._fp(["김민지", "박철수"]), self._fp(["김민지", "박철수"]))
+
+    def test_order_does_not_change_fingerprint(self):
+        # 같은 규칙이면 행 순서가 흔들려도 같은 지문(정렬 후 계산) — 헛되이 다시 세지 않게
+        self.assertEqual(self._fp(["김민지", "박철수"]), self._fp(["박철수", "김민지"]))
+
+    def test_removing_a_name_changes_fingerprint(self):
+        # BACKLOG 6 실제 사례: staff에서 '테스트'를 빼면 가림 결과가 달라진다 → 지문도 달라져야
+        self.assertNotEqual(self._fp(["김민지", "테스트"]), self._fp(["김민지"]))
+
+    def test_algo_version_changes_fingerprint(self):
+        # 코드에 박힌 규칙(호칭 접미 목록·이름 최소 길이)은 DB에 없어 지문이 자동으로 못 잡는다.
+        # 그 곁의 번호를 올리면 지문이 바뀌어야 옛 건수가 '다시 세기 필요'가 된다.
+        before = self._fp(["김민지"])
+        orig = masking.MASK_ALGO_VERSION
+        try:
+            masking.MASK_ALGO_VERSION = orig + 1
+            self.assertNotEqual(before, masking.rules_fingerprint(self.conn))
+        finally:
+            masking.MASK_ALGO_VERSION = orig
+        self.assertEqual(before, masking.rules_fingerprint(self.conn))  # 되돌리면 같은 지문
+
+    def test_one_character_pattern_change_changes_fingerprint(self):
+        before = self._fp(["김민지"])
+        self.conn.execute(
+            "UPDATE rulebook_pii_patterns SET pattern = pattern || '?' WHERE pattern_id="
+            "(SELECT MIN(pattern_id) FROM rulebook_pii_patterns "
+            " WHERE pattern_type='regex' AND pattern IS NOT NULL)")
+        self.conn.commit()
+        self.assertNotEqual(before, masking.rules_fingerprint(self.conn))
+
+
 class TestParagraph(unittest.TestCase):
     def test_split(self):
         paras = im.split_paragraphs("가\n나\n\n다\n\n\n라")
@@ -153,6 +207,16 @@ class TestPipeline(unittest.TestCase):
             "SELECT COUNT(*) c FROM post_images WHERE post_id=? AND reuse_scope='image_pattern_only'",
             (pid,)).fetchone()["c"]
         self.assertEqual(n, 2)  # 인물 분위기사진 + 전화번호 상담배너
+
+    def test_mask_count_saved_at_intake(self):
+        # 3차: 투입·추출 때 가림 건수+지문이 함께 저장 — 따로 세는 명령 없이도 숫자가 있어야
+        pid = self.res["post_id"]
+        row = self.conn.execute(
+            "SELECT mask_count, mask_rules_fingerprint FROM posts WHERE post_id=?",
+            (pid,)).fetchone()
+        self.assertEqual(row["mask_count"], len(self.res["hits"]))
+        self.assertGreater(row["mask_count"], 0)   # 이 샘플엔 전화번호·이름이 들어 있음
+        self.assertEqual(row["mask_rules_fingerprint"], masking.rules_fingerprint(self.conn))
 
     def test_idempotent_no_duplicate(self):
         self.assertEqual(self.res["post_id"], self.res2["post_id"])

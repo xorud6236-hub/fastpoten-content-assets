@@ -155,6 +155,12 @@ def process_article(conn, folder):
 
     # 2) DB upsert + 문단 재생성
     post_id = upsert_post(conn, meta, paths)
+    # 가림 건수 저장 — 방금 위에서 나온 hits를 그대로 쓴다(파일을 다시 열어 다시 세지 않음).
+    # 세는 재료가 body_clean(=clean)이라 상세 화면의 '총 N건'과 같은 숫자다.
+    # ★ 불변 1: 넣는 건 개수(len)와 지문뿐 — hits[i]['original']은 쓰지 않는다.
+    conn.execute(
+        "UPDATE posts SET mask_count=?, mask_rules_fingerprint=? WHERE post_id=?",
+        (len(hits), masking.rules_fingerprint(conn), post_id))
     conn.execute("DELETE FROM post_paragraphs WHERE post_id=?", (post_id,))
     conn.execute("DELETE FROM post_images WHERE post_id=?", (post_id,))
 

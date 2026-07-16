@@ -12,6 +12,8 @@
   - raw_text / body_raw / body_clean 의 '원본 문자열'은 마스킹 통과분 외에는 화면에 절대 출력하지 않는다.
   - "가림 종류·건수"는 서버 내부에서만 계산한다: body_clean(개인정보 포함)을 서버가 읽어
     masking.py로 다시 가려 hit의 '종류'만 세고, 원본 문자열은 화면으로 내보내지 않는다.
+    (상세 화면 1건만 이렇게 센다. 목록은 창고에 저장된 건수(posts.mask_count)를 읽을 뿐
+     본문 파일을 열지 않는다 — 저장된 지문이 지금 규칙과 다르면 숫자 대신 '다시 세기 필요'.)
   - 이미지: 이 뷰어는 localhost 읽기전용·관리자 1인 검수용이라 추출 이미지를 실제로 보여준다
     (불변 1은 '발행·재사용 금지'지 '검수 보기 금지'가 아님 — 사람이 개인정보 유무·재사용 가부를
     판단하려면 봐야 함). 단 reuse_scope 배지(재사용 가능/권리 확인 필요/원본 재사용 금지)는 그대로
@@ -292,9 +294,10 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .imgnote { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .placeholder { background: #eef1f5; color: var(--muted); border-radius: 6px;
                padding: 24px 12px; text-align: center; font-size: 13px; margin-top: 8px; }
-/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 9컬럼(제목·카페·담당자·상태·가림·문단·이미지·조회수·작성일) */
+/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 9컬럼(제목·카페·담당자·상태·가림·문단·이미지·조회수·작성일)
+   '가림' 칸은 '다시 세기 필요'가 들어갈 만큼 넓히고 그만큼 제목을 줄임(제목은 말줄임 처리라 안전). */
 .listhead, .listrow { display: grid;
-    grid-template-columns: 2.6fr 1fr 1fr 1.2fr 0.7fr 0.6fr 0.7fr 0.9fr 1.1fr; gap: 12px;
+    grid-template-columns: 2fr 1fr 1fr 1.2fr 1.3fr 0.6fr 0.7fr 0.9fr 1.1fr; gap: 12px;
     padding: 12px 16px; align-items: center; }
 .listhead { color: var(--muted); font-size: 13px; font-weight: 700;
             border-bottom: 2px solid var(--line); }
@@ -305,6 +308,20 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .num-dim { color: var(--muted); }
 .num { text-align: right; }
+/* '가림' 칸에 숫자를 못 쓰는 줄(규칙이 바뀌었거나 아직 안 셈) — 회색 작은 글자.
+   경고색을 쓰지 않는 이유: 규칙을 한 번 손보면 온 줄이 이 상태가 되는데 전부 경고색이면 경고가 아니게 된다.
+   해야 할 일은 목록 위 안내 줄이 말한다. */
+.recount { color: var(--muted); font-size: 12px; }
+/* 쪽 이동 줄 — 훑는 동안 반복해서 누르는 주 동작이라 손가락 크기(44px) 확보.
+   좁은 화면에선 가로로 삐져나가지 않고 두 줄로 넘어간다. 색은 기존 변수만 사용. */
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+         margin: 8px 0 24px; font-size: 15px; }
+.pager a, .pager .cur, .pager .off { display: inline-flex; align-items: center;
+         min-height: 44px; padding: 0 12px; }
+.pager a { font-weight: 700; }
+.pager .cur { font-weight: 800; }
+/* 누를 수 없는 이동 — 자리는 지키되 흐린 글자만(화살표·밑줄 없음. 색만으로 구분하지 않음) */
+.pager .off { color: var(--muted); }
 .filters { margin: 16px 0; font-size: 14px; }
 .filters a.on { font-weight: 800; text-decoration: underline; }
 .filters .note { color: var(--muted); font-size: 13px; margin-left: 8px; }
@@ -579,15 +596,24 @@ def render_not_found():
 # ---------------------------------------------------------------------------
 # 화면 B — 목록
 # ---------------------------------------------------------------------------
-def render_list(conn, view="all", sort="recent"):
+PAGE_SIZE = 100   # 한 쪽에 보이는 글 수(사용자 확정). 바꾸려면 이 숫자 하나만.
+
+
+def render_list(conn, view="all", sort="recent", page_no=1):
     # 입력검증: 쿼리값을 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
     view = view if view in ("ok", "fail") else "all"
     sort = "views" if sort == "views" else "recent"
+    # 쪽 번호도 같은 결 — 정수만 통과. 범위 밖은 아래에서 가장 가까운 쪽으로(오류 화면 없음)
+    try:
+        page_no = int(page_no)
+    except (TypeError, ValueError):
+        page_no = 1
     try:
         # ★ 조회수(참고 신호)를 한 번의 JOIN으로(행마다 재조회 없음 — N+1 회피).
+        # ★ 가림 건수는 저장된 값(mask_count)을 그대로 읽는다 — 목록은 본문 파일을 열지 않는다.
         rows = conn.execute(
             "SELECT p.post_id, p.title, p.cafe_name, p.staff_name, p.extraction_status, "
-            "p.publish_date, p.body_clean_path, rs.view_count AS views, "
+            "p.publish_date, p.mask_count, p.mask_rules_fingerprint, rs.view_count AS views, "
             "(SELECT COUNT(*) FROM post_paragraphs pp WHERE pp.post_id=p.post_id) para_n, "
             "(SELECT COUNT(*) FROM post_images pi WHERE pi.post_id=p.post_id) img_n "
             "FROM posts p "
@@ -596,6 +622,8 @@ def render_list(conn, view="all", sort="recent"):
             "WHERE p.body_raw_path IS NOT NULL "
             "ORDER BY p.updated_at DESC, p.post_id DESC",
             (AUTO_VIEW_MARK,)).fetchall()
+        # 지금의 가림 규칙 지문 — 요청당 딱 한 번(질의 2번). 저장된 지문과 다르면 옛 숫자다.
+        now_fp = masking.rules_fingerprint(conn)
     except sqlite3.Error:
         # 자산창고 파일/테이블을 못 열 때(코드 용어 노출 금지)
         topbar = "<div class='topbar'><span class='t-title'>추출 글 품질 확인</span></div>"
@@ -627,33 +655,10 @@ def render_list(conn, view="all", sort="recent"):
             return not is_success(r["extraction_status"])
         return True
 
-    head = ("<div class='listhead'>"
-            "<div>제목</div><div>카페</div><div>담당자</div><div>상태</div>"
-            "<div>가림</div><div>문단</div><div>이미지</div>"
-            "<div class='num'>조회수</div><div>작성일</div></div>")
-    body_rows = []
-    for r in rows:
-        if not match(r):
-            continue
-        ok = is_success(r["extraction_status"])
-        # simplified: 목록마다 body_clean을 다시 읽어 가림 건수를 센다(소량 파일럿엔 충분).
-        #   글이 대량이 되면 건수를 저장해 두는 방식으로 바꿀 것.
-        mask_n = sum(mask_type_counts(conn, r["body_clean_path"]).values())
-        mask_cls = "" if mask_n else " num-dim"
-        v = r["views"]
-        view_cell = (f"<div class='num'>{_comma(v)}</div>" if v is not None
-                     else "<div class='num num-dim'>-</div>")
-        body_rows.append(
-            f"<a class='listrow' href='/post?id={r['post_id']}'>"
-            f"<div class='r-title'>{esc(r['title'] or '(제목 없음)')}</div>"
-            f"<div>{esc(r['cafe_name'] or '-')}</div>"
-            f"<div>{esc(r['staff_name'] or '-')}</div>"
-            f"<div><span class='badge {'ok' if ok else 'danger'}'>"
-            f"{esc(r['extraction_status'] or '상태 미상')}</span></div>"
-            f"<div class='{mask_cls.strip()}'>{mask_n}건</div>"
-            f"<div>{r['para_n']}</div><div>{r['img_n']}</div>"
-            f"{view_cell}"
-            f"<div>{esc(r['publish_date'] or '-')}</div></a>")
+    def stale(r):
+        """저장된 가림 건수를 못 믿는 줄 — 아직 안 셌거나, 센 뒤에 규칙이 바뀌었다.
+        둘을 구별해 보여주지 않는다(사용자가 할 일이 '다시 세기'로 똑같다)."""
+        return r["mask_count"] is None or r["mask_rules_fingerprint"] != now_fp
 
     def on(cond):
         return " class='on'" if cond else ""
@@ -666,8 +671,99 @@ def render_list(conn, view="all", sort="recent"):
                f"<a href='/?sort=recent{vq}'{on(sort=='recent')}>최신순</a> · "
                f"<a href='/?sort=views{vq}'{on(sort=='views')}>조회수 높은 순</a>"
                "<span class='note'>조회수는 참고 신호입니다.</span></div>")
-    body = (f"<div class='wrap'>{filters}{head}{''.join(body_rows)}</div>")
+    # 보기·정렬 링크에는 page를 달지 않는다 → 보기·정렬을 바꾸면 언제나 1쪽부터
+    # (다른 목록이 됐는데 27쪽에 서 있으면 텅 빈 화면이 뜬다).
+
+    # ① 안내 줄 — 다시 세야 하는 글이 있을 때만. 건수는 이 쪽이 아니라 창고 전체 기준(할 일의 크기).
+    n_stale = sum(1 for r in rows if stale(r))
+    notice = (f"<p class='intro sub'>가림 건수를 다시 세야 하는 글이 {_comma(n_stale)}건 있습니다"
+              "(가림 규칙이 바뀌었거나, 아직 세지 않은 글입니다). "
+              "클로드 코드에 ‘가림 건수 다시 세 줘’라고 말하면 정리됩니다.</p>") if n_stale else ""
+
+    # 거르고 정렬한 '뒤에' 잘라낸다 — 거르기·정렬 규칙은 한 글자도 안 바뀐다(계획 §1)
+    matched = [r for r in rows if match(r)]
+    n_shown = len(matched)
+    if n_shown == 0:
+        what = {"ok": "성공만", "fail": "실패만"}.get(view, "전체")
+        body = (f"<div class='wrap'>{filters}<div class='state'>{what} 보기에 해당하는 글이 "
+                "없습니다. 위에서 ‘전체’를 눌러 보세요.</div></div>")
+        return page("추출 글 품질 확인", topbar, body)
+
+    n_pages = -(-n_shown // PAGE_SIZE)                  # 올림 나눗셈
+    page_no = min(max(page_no, 1), n_pages)             # 없는 쪽 → 가장 가까운 쪽
+    start = (page_no - 1) * PAGE_SIZE
+    chunk = matched[start:start + PAGE_SIZE]
+
+    # ② 범위 줄 — 상단 배지(창고 전체)와 나란히 읽으면 이어지도록 같은 숫자를 다시 부른다
+    prefix = {"ok": "성공만 ", "fail": "실패만 "}.get(view, "")
+    if n_pages == 1:
+        range_line = f"{prefix}{_comma(n_shown)}건 모두 보는 중"
+    else:
+        range_line = (f"{prefix}{_comma(n_shown)}건 중 {_comma(start + 1)}~"
+                      f"{_comma(start + len(chunk))}번째 보는 중 · {page_no} / {n_pages}쪽")
+    range_html = f"<p class='intro sub'>{range_line}</p>"
+
+    head = ("<div class='listhead'>"
+            "<div>제목</div><div>카페</div><div>담당자</div><div>상태</div>"
+            "<div>가림</div><div>문단</div><div>이미지</div>"
+            "<div class='num'>조회수</div><div>작성일</div></div>")
+    body_rows = []
+    for r in chunk:
+        ok = is_success(r["extraction_status"])
+        if stale(r):
+            # 못 믿는 숫자는 아예 안 쓴다 — 옛 숫자가 조용히 보이는 일이 구조적으로 불가능해진다.
+            mask_cell = "<div class='recount'>다시 세기 필요</div>"
+        else:
+            mask_n = r["mask_count"]
+            dim = "" if mask_n else " class='num-dim'"   # 0건은 흐리게(지금과 동일)
+            mask_cell = f"<div{dim}>{mask_n}건</div>"
+        v = r["views"]
+        view_cell = (f"<div class='num'>{_comma(v)}</div>" if v is not None
+                     else "<div class='num num-dim'>-</div>")
+        body_rows.append(
+            f"<a class='listrow' href='/post?id={r['post_id']}'>"
+            f"<div class='r-title'>{esc(r['title'] or '(제목 없음)')}</div>"
+            f"<div>{esc(r['cafe_name'] or '-')}</div>"
+            f"<div>{esc(r['staff_name'] or '-')}</div>"
+            f"<div><span class='badge {'ok' if ok else 'danger'}'>"
+            f"{esc(r['extraction_status'] or '상태 미상')}</span></div>"
+            f"{mask_cell}"
+            f"<div>{r['para_n']}</div><div>{r['img_n']}</div>"
+            f"{view_cell}"
+            f"<div>{esc(r['publish_date'] or '-')}</div></a>")
+
+    body = (f"<div class='wrap'>{filters}{notice}{range_html}{head}"
+            f"{''.join(body_rows)}{pager_html(view, sort, page_no, n_pages)}</div>")
     return page("추출 글 품질 확인", topbar, body)
+
+
+def list_href(view, sort, page_no):
+    """목록 링크 — 지금 보기·정렬을 그대로 달고 다닌다(쪽을 옮겨도 유지). 값은 이미 좁혀진 리터럴."""
+    q = [f"{k}={v}" for k, v in (("view", view), ("sort", sort)) if v not in ("all", "recent")]
+    if page_no > 1:
+        q.append(f"page={page_no}")
+    return "/?" + "&".join(q) if q else "/"
+
+
+def pager_html(view, sort, page_no, n_pages):
+    """③ 쪽 이동 줄(목록 아래만). 한 쪽뿐이면 줄 자체가 없다.
+    번호를 늘어놓지 않는다 — 이 화면의 훑기는 순서대로 넘기기다(사용자 확정).
+    누를 수 없는 이동은 없애지 않고 흐리게 남긴다(쪽마다 단추 위치가 움직이면 연달아 누르기가 방해받음)."""
+    if n_pages <= 1:
+        return ""
+
+    def item(label_on, label_off, target, enabled):
+        if not enabled:      # 화살표·밑줄 없이 흐린 글자 — 흑백으로 봐도 링크가 아님이 보인다
+            return f"<span class='off'>{label_off}</span>"
+        return f"<a href='{list_href(view, sort, target)}'>{label_on}</a>"
+    prev_ok, next_ok = page_no > 1, page_no < n_pages
+    return ("<div class='pager'>"
+            + item("← 처음", "처음", 1, prev_ok)
+            + item("← 이전", "이전", page_no - 1, prev_ok)
+            + f"<span class='cur'>{page_no} / {n_pages}쪽</span>"
+            + item("다음 →", "다음", page_no + 1, next_ok)
+            + item("끝 →", "끝", n_pages, next_ok)
+            + "</div>")
 
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1331,8 @@ def make_handler(db_path):
             try:
                 if u.path == "/":
                     self._send_html(render_list(
-                        conn, qs.get("view", ["all"])[0], qs.get("sort", ["recent"])[0]))
+                        conn, qs.get("view", ["all"])[0], qs.get("sort", ["recent"])[0],
+                        qs.get("page", ["1"])[0]))
                 elif u.path == "/analysis":
                     self._send_html(render_analysis(
                         conn, qs.get("sort", ["views"])[0],

@@ -24,6 +24,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "src"))
 import db  # noqa: E402
 import load_rulebook  # noqa: E402
+import masking  # noqa: E402
 import viewer  # noqa: E402
 
 # 개인정보 — 어떤 화면에도 원본 그대로 나오면 안 됨(마스킹돼 사라져야 함)
@@ -210,6 +211,13 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertIn("1,234", h)                           # 천단위 쉼표 조회수
         self.assertIn("김민지", h)                           # 담당자 실명(내부 검수 허용)
 
+    def test_list_page_query_is_integer_only(self):
+        # ★ 입력검증: 주소의 쪽 번호가 글자·범위 밖이어도 오류 화면 없이 가장 가까운 쪽을 보여준다
+        for q in ("?page=abc", "?page=0", "?page=-5", "?page=99", "?page=1%20OR%201"):
+            h = self._get("/" + q)
+            self.assertIn("임상심리사 2급 응시자격", h)
+            self.assertNotIn(PII_PHONE, h)
+
     # ---- 분석 화면 렌더 + 개인정보 누출 0(불변 1·3) ----
     def test_analysis_renders_sections(self):
         h = self._get("/analysis")
@@ -280,6 +288,152 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertNotIn(PII_PHONE, h)
         self.assertNotIn(PII_NAME, h)
         self.assertNotIn(OPENCHAT, h)
+
+
+class TestListPagingAndMaskCount(unittest.TestCase):
+    """목록 4차 — 저장된 가림 건수 사용 + 쪽 나누기. 임시 창고만 사용(실제 창고에 쓰지 않음).
+
+    ★ 이 화면은 읽기 전용이다: render_list는 창고에 아무것도 쓰지 않는다.
+    글 250건(성공 150·실패 100), 최신순은 post_id 내림차순(updated_at 동일)."""
+
+    N_POSTS = 250
+    N_OK = 150
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.dbp = os.path.join(cls.tmp, "list.sqlite3")
+        load_rulebook.run(db_path=cls.dbp)              # 가림 규칙(지문의 재료)
+        cls.conn = db.get_connection(cls.dbp)
+        db.init_db(cls.conn)
+        cls.fp = masking.rules_fingerprint(cls.conn)
+        raw = os.path.join(cls.tmp, "body_raw.txt")     # 목록 대상 조건(body_raw_path IS NOT NULL)
+        _write(raw, "본문")
+        rows = [(i, f"글{i:03d}", "성공(자동추출)" if i <= cls.N_OK else "실패-삭제된글", raw)
+                for i in range(1, cls.N_POSTS + 1)]
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, extraction_status, body_raw_path) "
+            "VALUES (?,?,?,?)", rows)
+        cls.conn.executemany(
+            "INSERT INTO reference_signals (post_id, view_count, collected_from_sheet) "
+            "VALUES (?,?,?)",
+            [(i, i, viewer.AUTO_VIEW_MARK) for i in range(1, cls.N_POSTS + 1)])
+        # 가림 건수 3가지 상태(나머지 247건은 mask_count 없음 = 아직 안 셈)
+        cls.conn.execute(                       # 지금 규칙으로 셈 → 숫자 그대로
+            "UPDATE posts SET mask_count=3, mask_rules_fingerprint=? WHERE post_id=250", (cls.fp,))
+        cls.conn.execute(                       # 센 뒤 규칙이 바뀜 → 옛 숫자(5)는 화면에 못 나옴
+            "UPDATE posts SET mask_count=5, mask_rules_fingerprint='옛날지문' WHERE post_id=249")
+        cls.conn.execute(                       # 세어 봤는데 0건 → 흐린 '0건'
+            "UPDATE posts SET mask_count=0, mask_rules_fingerprint=? WHERE post_id=248", (cls.fp,))
+        cls.conn.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    # ---- 쪽 나누기 ----
+    def test_first_page_shows_100_and_range_line(self):
+        h = viewer.render_list(self.conn)
+        self.assertEqual(h.count("class='listrow'"), 100)
+        self.assertIn("250건 중 1~100번째 보는 중 · 1 / 3쪽", h)
+        self.assertIn("글250", h)          # 최신순 첫 줄
+        self.assertNotIn("글150", h)       # 다음 쪽
+        # 첫 쪽에선 '처음·이전'이 흐림(없애지 않고 남김), '다음·끝'만 링크
+        self.assertIn("<span class='off'>처음</span>", h)
+        self.assertIn("<span class='off'>이전</span>", h)
+        self.assertIn("다음 →", h)
+        self.assertIn("<span class='cur'>1 / 3쪽</span>", h)
+
+    def test_last_page_partial_and_disabled_next(self):
+        h = viewer.render_list(self.conn, page_no=3)
+        self.assertEqual(h.count("class='listrow'"), 50)
+        self.assertIn("250건 중 201~250번째 보는 중 · 3 / 3쪽", h)
+        self.assertIn("<span class='off'>다음</span>", h)
+        self.assertIn("<span class='off'>끝</span>", h)
+        self.assertIn("← 처음", h)
+
+    def test_out_of_range_page_falls_back_to_nearest(self):
+        # 오류 화면 대신 가장 가까운 쪽(기존 view/sort와 같은 결 — 허용된 것만 통과)
+        self.assertIn("3 / 3쪽", viewer.render_list(self.conn, page_no=99))
+        self.assertIn("1 / 3쪽", viewer.render_list(self.conn, page_no=0))
+        self.assertIn("1 / 3쪽", viewer.render_list(self.conn, page_no=-7))
+        self.assertIn("1 / 3쪽", viewer.render_list(self.conn, page_no="abc"))   # 정수 강제
+        self.assertIn("1 / 3쪽", viewer.render_list(self.conn, page_no=None))
+        self.assertIn("2 / 3쪽", viewer.render_list(self.conn, page_no="2"))     # 주소는 문자열
+
+    def test_single_page_hides_pager(self):
+        h = viewer.render_list(self.conn, view="fail", page_no=1)   # 실패 100건 = 딱 한 쪽
+        self.assertIn("실패만 100건 모두 보는 중", h)
+        self.assertNotIn("class='pager'", h)
+
+    # ---- 필터·정렬이 쪽을 넘어도 유지 ----
+    def test_filter_survives_paging(self):
+        h = viewer.render_list(self.conn, view="ok", page_no=2)
+        self.assertIn("성공만 150건 중 101~150번째 보는 중 · 2 / 2쪽", h)
+        self.assertNotIn("실패-삭제된글", h)                  # 거르기 규칙 그대로
+        self.assertIn("href='/?view=ok'", h)                  # 쪽 이동이 보기를 달고 다님(1쪽)
+        self.assertEqual(h.count("class='listrow'"), 50)
+
+    def test_sort_survives_paging(self):
+        h = viewer.render_list(self.conn, sort="views", page_no=2)
+        self.assertIn("href='/?sort=views'", h)               # 쪽 이동이 정렬을 달고 다님
+        self.assertIn("href='/?sort=views&page=3'", h)
+        self.assertIn("글150", h)          # 조회수=post_id → 2쪽은 150~51위
+        self.assertNotIn("글250", h)
+
+    def test_filter_and_sort_together_in_page_links(self):
+        h = viewer.render_list(self.conn, view="ok", sort="views", page_no=1)
+        self.assertIn("href='/?view=ok&sort=views&page=2'", h)
+
+    def test_changing_filter_starts_at_page_one(self):
+        # 보기·정렬 링크에는 page가 붙지 않는다(다른 목록이 됐는데 뒷쪽에 서 있으면 빈 화면)
+        h = viewer.render_list(self.conn, view="ok", page_no=2)
+        self.assertIn("href='/?view=fail'", h)
+        self.assertNotIn("href='/?view=fail&page=2'", h)
+
+    # ---- 저장된 가림 건수(지문 대조) ----
+    def test_saved_count_is_shown_when_fingerprint_matches(self):
+        h = viewer.render_list(self.conn)
+        self.assertIn(">3건</div>", h)                        # 지금 규칙으로 센 글 → 숫자
+        self.assertIn("<div class='num-dim'>0건</div>", h)    # 세어 봤는데 0건 → 흐린 숫자
+
+    def test_stale_fingerprint_never_shows_old_number(self):
+        h = viewer.render_list(self.conn)
+        self.assertIn("<div class='recount'>다시 세기 필요</div>", h)
+        self.assertNotIn(">5건</div>", h)                     # 옛 숫자는 화면에 못 나온다
+        # 안내 줄: 아직 안 센 글 + 규칙이 바뀐 글을 한 문구로, 창고 전체 기준 건수
+        self.assertIn(f"다시 세야 하는 글이 {self.N_POSTS - 2}건 있습니다", h)
+        self.assertNotIn("count_masks", h)                    # 화면에 명령줄·파일명 노출 금지
+
+    def test_no_notice_when_all_counted(self):
+        conn = db.get_connection(os.path.join(self.tmp, "all.sqlite3"))
+        db.init_db(conn)
+        raw = os.path.join(self.tmp, "body_raw.txt")
+        conn.execute("INSERT INTO posts (post_id, title, extraction_status, body_raw_path, "
+                     "mask_count, mask_rules_fingerprint) VALUES (1,'글','성공(자동추출)',?,2,?)",
+                     (raw, masking.rules_fingerprint(conn)))
+        conn.commit()
+        h = viewer.render_list(conn)
+        self.assertNotIn("다시 세야 하는 글이", h)
+        self.assertIn(">2건</div>", h)
+        self.assertIn("1건 모두 보는 중", h)
+        conn.close()
+
+    # ---- 성능의 본체: 목록은 본문 파일을 열지 않는다 ----
+    def test_list_does_not_read_body_files(self):
+        called = []
+        orig = viewer.mask_type_counts
+
+        def spy(*a, **k):
+            called.append(a)
+            return orig(*a, **k)
+        viewer.mask_type_counts = spy
+        try:
+            viewer.render_list(self.conn)
+        finally:
+            viewer.mask_type_counts = orig
+        self.assertEqual(called, [])   # 글마다 다시 세지 않음(36.3초의 원인이었다)
 
 
 class TestAnalysisMath(unittest.TestCase):
