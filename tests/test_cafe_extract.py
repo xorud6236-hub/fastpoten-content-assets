@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """카페 추출기(extract_cafe) 자체 테스트 — 라이브 네이버 접속 없이 검증.
 
 - 파서: 저장된 HTML 픽스처에서 제목·조회수·본문문단·이미지를 뽑는지.
@@ -289,7 +289,7 @@ class TestOfflinePipeline(unittest.TestCase):
             "staff_name, publish_date, account_id, extraction_status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (FIXTURE_URL, FIXTURE_URL, "공준모", "임상심리사2급 응시자격",
-             "김민지", "2024-03-15", "평생교육기관67", "링크오류"))
+             "가상인", "2024-03-15", "평생교육기관67", "링크오류"))
         conn.commit()
         cls.n_before = conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"]
         post = ex.find_post(conn, FIXTURE_URL)
@@ -356,7 +356,7 @@ class TestOfflinePipeline(unittest.TestCase):
         self.assertEqual(row["account_id"], "평생교육기관67")
         self.assertEqual(row["cafe_name"], "공준모")
         self.assertEqual(row["keyword"], "임상심리사2급 응시자격")
-        self.assertEqual(row["staff_name"], "김민지")
+        self.assertEqual(row["staff_name"], "가상인")
         self.assertEqual(row["publish_date"], "2024-03-15")
 
     def test_no_new_rows_and_idempotent(self):

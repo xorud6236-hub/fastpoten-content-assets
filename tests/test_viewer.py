@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """viewer 자체 테스트 — 불변 1(마스킹) 회귀. 실제 서버를 띄워 HTTP로 받아 검증.
 
 핵심(★ 차단 사유): 상세/목록 HTML에 개인정보(전화번호·미마스킹 이름·오픈채팅 링크·OO쌤)가
@@ -29,7 +29,7 @@ import viewer  # noqa: E402
 
 # 개인정보 — 어떤 화면에도 원본 그대로 나오면 안 됨(마스킹돼 사라져야 함)
 PII_PHONE = "010-1234-5678"
-PII_NAME = "김민지쌤"          # 직원 실명+호칭(마스킹 대상)
+PII_NAME = "가상인쌤"          # 직원 실명+호칭(마스킹 대상)
 OPENCHAT = "https://open.kakao.com/o/secret123"
 # 비-개인정보 원문 흐름 표식 — 왼쪽 패널에 마스킹 후 그대로 보여야 함(대조의 목적)
 FLOW_MARK = "가공전원문흐름표식OK"
@@ -51,7 +51,7 @@ class TestViewerInvariant(unittest.TestCase):
         load_rulebook.run(db_path=cls.dbp)          # 마스킹 패턴 적재
         conn = db.get_connection(cls.dbp)
         db.init_db(conn)
-        conn.execute("INSERT INTO staff (staff_name) VALUES ('김민지')")
+        conn.execute("INSERT INTO staff (staff_name) VALUES ('가상인')")
 
         # body_clean(개인정보 포함) — 서버가 종류·건수 계산에만 쓰고 화면엔 안 냄
         clean_path = os.path.join(cls.tmp, "corpus", "post", "body_clean.txt")
@@ -66,7 +66,7 @@ class TestViewerInvariant(unittest.TestCase):
             "publish_date, content_length_type, extraction_status, "
             "body_raw_path, body_clean_path, body_pub_ref_path) "
             "VALUES (21512, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("임상심리사 2급 응시자격", "임상심리사2급 응시자격", "공준모", "질문게시판", "김민지",
+            ("임상심리사 2급 응시자격", "임상심리사2급 응시자격", "공준모", "질문게시판", "가상인",
              "2026-01-06", "medium", "성공(자동추출)",
              raw_path, clean_path, clean_path))
         # 문단: clean_text는 마스킹본(개인정보 없음), raw_text엔 원문 흔적(화면에 나오면 안 됨)
@@ -209,7 +209,7 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertIn(">조회수</div>", h)                   # 새 헤더 컬럼(num 정렬)
         self.assertIn("조회수는 참고 신호입니다.", h)        # 참고 신호 병기(불변 3)
         self.assertIn("1,234", h)                           # 천단위 쉼표 조회수
-        self.assertIn("김민지", h)                           # 담당자 실명(내부 검수 허용)
+        self.assertIn("가상인", h)                           # 담당자 실명(내부 검수 허용)
 
     def test_list_page_query_is_integer_only(self):
         # ★ 입력검증: 주소의 쪽 번호가 글자·범위 밖이어도 오류 화면 없이 가장 가까운 쪽을 보여준다
@@ -235,7 +235,7 @@ class TestViewerInvariant(unittest.TestCase):
     def test_analysis_no_pii_leak(self):
         h = self._get("/analysis")
         self.assertNotIn(PII_PHONE, h)
-        self.assertNotIn(PII_NAME, h)                       # '김민지쌤'(호칭 포함) 누출 없음
+        self.assertNotIn(PII_NAME, h)                       # '가상인쌤'(호칭 포함) 누출 없음
         self.assertNotIn(OPENCHAT, h)
         self.assertNotIn(PARA_RAW_SENTINEL, h)
 

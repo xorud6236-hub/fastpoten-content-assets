@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """CA-3 자체 테스트 — 마스킹·문단·파이프라인 검증.
 
 핵심(CLAUDE.md 검증방법): 테스트 문장(전화번호·OO쌤 포함)이 반드시 가려지는지 자동 확인.
@@ -44,8 +44,8 @@ class TestMasking(unittest.TestCase):
         self.assertIn("[전화번호]", out)
 
     def test_honorific_masked(self):
-        out, _ = masking.mask_text("담당 김민지쌤이 안내해요", self.pats)
-        self.assertNotIn("김민지쌤", out)
+        out, _ = masking.mask_text("담당 가상인쌤이 안내해요", self.pats)
+        self.assertNotIn("가상인쌤", out)
         self.assertIn("[담당자]", out)
 
     def test_openchat_masked_no_overrun(self):
@@ -54,12 +54,12 @@ class TestMasking(unittest.TestCase):
         self.assertIn(")으로 연락", out)  # 괄호·뒤 한글은 보존
 
     def test_name_list_masks_bare_name(self):
-        out, _ = masking.mask_text("김민지 선생님께", self.pats, name_list=["김민지"])
-        self.assertNotIn("김민지", out)
+        out, _ = masking.mask_text("가상인 선생님께", self.pats, name_list=["가상인"])
+        self.assertNotIn("가상인", out)
 
     def test_no_pii_no_change(self):
         text = "임상심리사 2급은 학사학위와 1년 수련이 필요해요."
-        out, hits = masking.mask_text(text, self.pats, name_list=["김민지"])
+        out, hits = masking.mask_text(text, self.pats, name_list=["가상인"])
         self.assertEqual(out, text)
         self.assertEqual(hits, [])
 
@@ -86,20 +86,20 @@ class TestRulesFingerprint(unittest.TestCase):
         return masking.rules_fingerprint(self.conn)
 
     def test_same_rules_same_fingerprint(self):
-        self.assertEqual(self._fp(["김민지", "박철수"]), self._fp(["김민지", "박철수"]))
+        self.assertEqual(self._fp(["가상인", "나철수"]), self._fp(["가상인", "나철수"]))
 
     def test_order_does_not_change_fingerprint(self):
         # 같은 규칙이면 행 순서가 흔들려도 같은 지문(정렬 후 계산) — 헛되이 다시 세지 않게
-        self.assertEqual(self._fp(["김민지", "박철수"]), self._fp(["박철수", "김민지"]))
+        self.assertEqual(self._fp(["가상인", "나철수"]), self._fp(["나철수", "가상인"]))
 
     def test_removing_a_name_changes_fingerprint(self):
         # BACKLOG 6 실제 사례: staff에서 '테스트'를 빼면 가림 결과가 달라진다 → 지문도 달라져야
-        self.assertNotEqual(self._fp(["김민지", "테스트"]), self._fp(["김민지"]))
+        self.assertNotEqual(self._fp(["가상인", "테스트"]), self._fp(["가상인"]))
 
     def test_algo_version_changes_fingerprint(self):
         # 코드에 박힌 규칙(호칭 접미 목록·이름 최소 길이)은 DB에 없어 지문이 자동으로 못 잡는다.
         # 그 곁의 번호를 올리면 지문이 바뀌어야 옛 건수가 '다시 세기 필요'가 된다.
-        before = self._fp(["김민지"])
+        before = self._fp(["가상인"])
         orig = masking.MASK_ALGO_VERSION
         try:
             masking.MASK_ALGO_VERSION = orig + 1
@@ -109,7 +109,7 @@ class TestRulesFingerprint(unittest.TestCase):
         self.assertEqual(before, masking.rules_fingerprint(self.conn))  # 되돌리면 같은 지문
 
     def test_one_character_pattern_change_changes_fingerprint(self):
-        before = self._fp(["김민지"])
+        before = self._fp(["가상인"])
         self.conn.execute(
             "UPDATE rulebook_pii_patterns SET pattern = pattern || '?' WHERE pattern_id="
             "(SELECT MIN(pattern_id) FROM rulebook_pii_patterns "
@@ -142,7 +142,7 @@ class TestPipeline(unittest.TestCase):
         cls.dbp = _patterns_db()
         # 담당자 이름을 staff에 넣어 name_list 마스킹 재료 확보
         conn = db.get_connection(cls.dbp)
-        conn.execute("INSERT OR IGNORE INTO staff (staff_name) VALUES ('김민지')")
+        conn.execute("INSERT OR IGNORE INTO staff (staff_name) VALUES ('가상인')")
         conn.commit(); conn.close()
         folder = os.path.join(ROOT, "examples", "intake_sample", "임상심리사2급_응시자격")
         cls.res = im.run([folder], db_path=cls.dbp)[0]
@@ -169,7 +169,7 @@ class TestPipeline(unittest.TestCase):
         text = open(path, encoding="utf-8").read()
         self.assertNotIn("010-1234-5678", text)
         self.assertNotIn("open.kakao.com", text)
-        self.assertNotIn("김민지쌤", text)
+        self.assertNotIn("가상인쌤", text)
         self.assertNotRegex(text, r"01[016-9]-?\d{3,4}-?\d{4}")
 
     def test_raw_is_verbatim(self):
@@ -177,7 +177,7 @@ class TestPipeline(unittest.TestCase):
         raw = open(os.path.join(ROOT, "corpus/임상심리사2급_응시자격/body_raw.txt"),
                    encoding="utf-8").read()
         self.assertIn("010-1234-5678", raw)
-        self.assertIn("김민지쌤", raw)
+        self.assertIn("가상인쌤", raw)
 
     def test_db_no_body_text_column(self):
         # posts엔 경로만(불변 4)
@@ -199,7 +199,7 @@ class TestPipeline(unittest.TestCase):
             "SELECT clean_text FROM post_paragraphs WHERE post_id=?", (pid,)).fetchall()
         joined = " ".join(r["clean_text"] for r in rows)
         self.assertNotIn("010-1234-5678", joined)
-        self.assertNotIn("김민지쌤", joined)
+        self.assertNotIn("가상인쌤", joined)
 
     def test_image_pattern_only_flagged(self):
         pid = self.res["post_id"]

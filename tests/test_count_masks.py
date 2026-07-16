@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """count_masks(가림 건수 채우기 명령) 자체 테스트.
 
 새 파일인 이유: 기존 테스트는 차수·모듈 단위로 나뉘어 있다(test_ca1=스키마 / test_ca3=마스킹·투입 /
@@ -44,7 +44,7 @@ class TestCountMasks(unittest.TestCase):
         cls.pii_path = os.path.join(cls.tmp, "corpus", "p1", "body_clean.txt")
         cls.plain_path = os.path.join(cls.tmp, "corpus", "p2", "body_clean.txt")
         cls.gone_path = os.path.join(cls.tmp, "corpus", "p3", "body_clean.txt")  # 일부러 안 만듦
-        _write(cls.pii_path, f"문의는 {PHONE} 로 주세요. 김민지쌤이 안내드려요. 박철수 담당입니다.")
+        _write(cls.pii_path, f"문의는 {PHONE} 로 주세요. 가상인쌤이 안내드려요. 나철수 담당입니다.")
         _write(cls.plain_path, "임상심리사 2급은 학사학위와 1년 수련이 필요해요.")
 
         # 룰북 패턴 적재는 한 번만(엑셀 읽기가 느림) → 테스트마다 이 파일을 복사해 씀
@@ -52,7 +52,7 @@ class TestCountMasks(unittest.TestCase):
         load_rulebook.run(db_path=cls.master)
         conn = db.get_connection(cls.master)
         db.init_db(conn)
-        conn.execute("INSERT INTO staff (staff_name) VALUES ('김민지')")
+        conn.execute("INSERT INTO staff (staff_name) VALUES ('가상인')")
         for pid, path in ((1, cls.pii_path), (2, cls.plain_path), (3, cls.gone_path)):
             conn.execute(
                 "INSERT INTO posts (post_id, title, extraction_status, body_clean_path) "
@@ -116,7 +116,7 @@ class TestCountMasks(unittest.TestCase):
         count_masks.run(db_path=self.dbp)
         before = self._rows()[1]["mask_count"]
         conn = db.get_connection(self.dbp)             # 직원 이름 추가 = 가림 규칙 변경
-        conn.execute("INSERT INTO staff (staff_name) VALUES ('박철수')")
+        conn.execute("INSERT INTO staff (staff_name) VALUES ('나철수')")
         conn.commit()
         new_fp = masking.rules_fingerprint(conn)
         conn.close()
@@ -126,7 +126,7 @@ class TestCountMasks(unittest.TestCase):
         stats = count_masks.run(db_path=self.dbp)      # 규칙이 바뀌었으니 다시 대상
         self.assertEqual(stats["counted"], 2)
         rows = self._rows()
-        self.assertEqual(rows[1]["mask_count"], before + 1)   # '박철수' 1건이 늘어남
+        self.assertEqual(rows[1]["mask_count"], before + 1)   # '나철수' 1건이 늘어남
         self.assertEqual(rows[1]["mask_rules_fingerprint"], new_fp)
 
     def test_body_file_is_never_written(self):
