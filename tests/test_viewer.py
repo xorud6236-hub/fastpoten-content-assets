@@ -281,6 +281,54 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertNotIn(OPENCHAT, h)
         self.assertNotIn(PARA_RAW_SENTINEL, h)
 
+    def test_data_tells_truth_about_facts(self):
+        # '데이터' 화면이 팩트를 '미적재'라고 말하던 거짓 안내 회귀 방지(2026-07-20)
+        conn = db.get_connection(self.dbp)
+        try:
+            n = conn.execute("SELECT COUNT(*) c FROM rulebook_facts").fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertGreater(n, 0, "룰북 적재가 팩트를 넣지 않았다 — 이 테스트의 전제가 깨짐")
+        h = self._get("/data")
+        self.assertNotIn("팩트(미적재)", h)
+        self.assertNotIn("아직 창고에 없습니다", h)
+        self.assertIn(f"{n:,}건이 창고에 있고", h)
+        self.assertIn("href='/facts'", h)
+
+    def test_facts_screen_serves_over_http(self):
+        # 이 창고는 load_rulebook으로 만들어져 팩트도 함께 들어온다(2차 적재가 같은 실행).
+        # 여기서는 라우팅·개인정보 누출만 본다. 빈 화면은 TestFactsScreens에서 따로 검증.
+        h = self._get("/facts")
+        self.assertIn("팩트 룰북", h)
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+
+    def test_fact_detail_serves_over_http(self):
+        # 상세도 주소로 실제로 열려야 한다(라우팅 오타를 잡는 유일한 테스트)
+        conn = db.get_connection(self.dbp)
+        try:
+            row = conn.execute("SELECT fact_id, item_name FROM rulebook_facts "
+                               "ORDER BY fact_id LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row, "룰북 적재가 팩트를 넣지 않았다 — 이 테스트의 전제가 깨짐")
+        h = self._get(f"/fact?id={row['fact_id']}")
+        self.assertIn(row["item_name"], h)
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self.assertNotIn(OPENCHAT, h)
+
+    def test_nav_has_facts_link(self):
+        self.assertIn("href='/facts'", self._get("/data"))
+
+    def test_viewer_is_read_only_no_post(self):
+        # ★ 3차는 읽기 전용 — 뷰어에 쓰기(POST) 경로가 없다(고치기·도장은 4차)
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/facts", data=b"x=1")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertIn(cm.exception.code, (405, 501))
+
     def test_topics_renders_and_no_pii(self):
         h = self._get("/topics")
         self.assertIn("주제 검수", h)
@@ -434,6 +482,132 @@ class TestListPagingAndMaskCount(unittest.TestCase):
         finally:
             viewer.mask_type_counts = orig
         self.assertEqual(called, [])   # 글마다 다시 세지 않음(36.3초의 원인이었다)
+
+
+class TestFactsScreens(unittest.TestCase):
+    """팩트 룰북 화면(3차) — 읽기 전용 목록·상세. 임시 창고만 사용(실제 창고에 쓰지 않음).
+
+    실물과 같은 규모(공통 16 + 개별 35 = 51건, 전부 '미확인')로 만들어 목록 숫자를 검증한다.
+    값은 전부 가상 — 실제 명단·개인정보는 테스트에 넣지 않는다(불변 1)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "facts.sqlite3"))
+        db.init_db(cls.conn)
+        # 1번: 실제로 모순이 발견된 항목의 재현(요건 160 ↔ 주의메모 120/160 ↔ FAQ 120)
+        cls.conn.execute(
+            "INSERT INTO rulebook_facts (fact_id, fact_kind, excel_no, category, item_name, "
+            "requirement, caution_memo, faq_top3, credits, source_version) "
+            "VALUES (1,'공통',27,'사회복지','사회복지사2급',?,?,?,?,'테스트')",
+            ("실습 160시간 필수", "2020.1.1 이전 입학자는 실습 120시간",
+             "Q1 실습은 몇 시간인가요? → 120시간 필수", ""))
+        rows = [(i, "공통" if i <= 16 else "개별", f"카테고리{i % 5}", f"가상항목{i:02d}")
+                for i in range(2, 52)]
+        cls.conn.executemany(
+            "INSERT INTO rulebook_facts (fact_id, fact_kind, category, item_name, "
+            "core_fact, source_version) VALUES (?,?,?,?,'가상 내용','테스트')", rows)
+        cls.conn.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_empty_state_guides_to_ingest(self):
+        # 팩트가 0건인 창고 — 화면에서는 넣을 수 없다는 것까지 알려준다
+        empty = db.get_connection(os.path.join(self.tmp, "empty.sqlite3"))
+        db.init_db(empty)
+        try:
+            h = viewer.render_facts(empty)
+            self.assertIn("아직 팩트가 창고에 없습니다.", h)
+            self.assertIn("화면에서는 넣을 수 없어요.", h)
+        finally:
+            empty.close()
+
+    def test_list_shows_51_and_all_unreviewed(self):
+        h = viewer.render_facts(self.conn)
+        self.assertEqual(h.count("class='listrow'"), 51)
+        self.assertIn("51건 중 0건 확인함", h)                  # 상단 띠 진행 배지
+        self.assertIn("<div class='n'>51</div>", h)            # 숫자 카드
+        self.assertIn("<div class='l'>미확인</div>", h)
+        self.assertIn("51건 전부 ‘미확인’에서 시작합니다", h)     # 정직 박스
+        self.assertIn("<span class='badge dim'>미확인</span>", h)  # 미확인은 회색(빨강 아님)
+        self.assertNotIn("badge danger", h)
+
+    def test_list_columns_and_edited_dash(self):
+        h = viewer.render_facts(self.conn)
+        for col in ("항목명", "종류", "카테고리", "상태", "고친 칸", "확인 날짜"):
+            self.assertIn(f">{col}</div>", h)
+        self.assertIn("<div class='num num-dim'>–</div>", h)   # 고친 칸 0 → 회색 –
+
+    def test_list_order_is_common_first(self):
+        # D-A: 공통 먼저 → 개별. 개별 첫 항목보다 공통 마지막 항목이 앞에 있다
+        h = viewer.render_facts(self.conn)
+        self.assertLess(h.index("가상항목16"), h.index("가상항목17"))
+        self.assertLess(h.index("사회복지사2급"), h.index("가상항목17"))
+
+    def test_list_filters_narrow_to_known_values(self):
+        # ★ 입력검증: 정해진 목록 밖의 필터값은 '전체'로 떨어진다(주입 차단)
+        self.assertEqual(viewer.render_facts(self.conn, view="'; DROP--").count("class='listrow'"), 51)
+        self.assertEqual(viewer.render_facts(self.conn, kind="abc").count("class='listrow'"), 51)
+        self.assertEqual(viewer.render_facts(self.conn, kind="common").count("class='listrow'"), 16)
+        self.assertEqual(
+            viewer.render_facts(self.conn, kind="individual").count("class='listrow'"), 35)
+        self.assertEqual(
+            viewer.render_facts(self.conn, view="unreviewed").count("class='listrow'"), 51)
+        h = viewer.render_facts(self.conn, view="reviewed")     # 확인함 0건
+        self.assertIn("이 보기에 해당하는 항목이 없습니다.", h)
+
+    def test_detail_shows_conflicting_fields_together(self):
+        # 이 화면의 존재 이유 — 요건·주의메모·FAQ가 한 화면에 함께 보여야 모순이 보인다
+        h = viewer.render_fact(self.conn, 1)
+        self.assertIn("응시/취득 요건", h)
+        self.assertIn("주의메모 (시점/예외)", h)
+        self.assertIn("자주 묻는 질문 TOP3", h)
+        self.assertIn("실습 160시간 필수", h)
+        self.assertIn("2020.1.1 이전 입학자는 실습 120시간", h)
+        self.assertIn("120시간 필수", h)
+        # D-B: 주의메모가 요건 바로 아래(FAQ보다 위)
+        self.assertLess(h.index("주의메모 (시점/예외)"), h.index("자주 묻는 질문 TOP3"))
+        self.assertGreater(h.index("주의메모 (시점/예외)"), h.index("응시/취득 요건"))
+
+    def test_detail_empty_field_is_kept_with_notice(self):
+        h = viewer.render_fact(self.conn, 1)
+        self.assertIn("필요 학점", h)                    # 빈 칸도 지우지 않는다
+        self.assertIn("이 칸은 비어 있습니다.", h)
+
+    def test_detail_has_next_unreviewed_link_and_no_history(self):
+        h = viewer.render_fact(self.conn, 1)
+        self.assertIn("다음 미확인 →", h)
+        self.assertNotIn("수정 이력", h)                 # 이력 0건이면 아예 안 보인다
+
+    def test_detail_individual_uses_its_own_fields(self):
+        h = viewer.render_fact(self.conn, 20)            # 개별 팩트
+        self.assertIn("핵심 팩트", h)
+        self.assertIn("사용 우선순위", h)
+        self.assertNotIn("자주 묻는 질문 TOP3", h)
+
+    def test_unknown_or_non_integer_id_is_friendly(self):
+        for bad in (99999, "abc", None, "1 OR 1"):
+            self.assertIn("그런 팩트 항목이 없습니다.", viewer.render_fact(self.conn, bad))
+
+    def test_facts_screens_have_no_pii(self):
+        # ★ 불변 1 회귀 — 팩트 값은 적재 때 이미 가려지지만 화면에서도 새지 않는지 확인
+        for h in (viewer.render_facts(self.conn), viewer.render_fact(self.conn, 1)):
+            self.assertNotIn(PII_PHONE, h)
+            self.assertNotIn(PII_NAME, h)
+            self.assertNotIn(OPENCHAT, h)
+
+    def test_facts_screens_do_not_write(self):
+        # ★ 읽기 전용 — 화면을 그려도 창고 내용이 그대로다(건수·상태 불변)
+        before = self.conn.execute(
+            "SELECT COUNT(*), SUM(review_status='미확인') FROM rulebook_facts").fetchone()
+        viewer.render_facts(self.conn)
+        viewer.render_fact(self.conn, 1)
+        after = self.conn.execute(
+            "SELECT COUNT(*), SUM(review_status='미확인') FROM rulebook_facts").fetchone()
+        self.assertEqual(tuple(before), tuple(after))
 
 
 class TestAnalysisMath(unittest.TestCase):

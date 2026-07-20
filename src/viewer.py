@@ -241,6 +241,8 @@ h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
 .badge.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
 .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
 .badge.danger { color: var(--danger); background: var(--danger-bg); border-color: var(--danger); }
+/* '아직 안 봄'(미확인) — 잘못이 아니므로 경고색을 쓰지 않는다. .chip dim과 같은 회색 값. */
+.badge.dim { color: var(--muted); background: #eef1f5; border-color: var(--line); }
 /* 태그 chip — 문단 역할·이미지 분류 */
 .chip { display: inline-block; border-radius: 6px; padding: 2px 8px;
         font-size: 13px; font-weight: 700; color: var(--accent);
@@ -275,7 +277,8 @@ h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
 }
 .para { background: var(--paper); border: 1px solid var(--line);
         border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.para .ptext { margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+/* 값 그대로 보여주는 글칸 — 줄바꿈 유지(문단 카드·팩트 칸 공용) */
+.ptext { margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
 mark.masked { background: var(--note-bg); color: var(--note-ink);
               border-radius: 4px; padding: 0 3px; font-weight: 700; }
 .panel { background: var(--paper); border: 1px solid var(--line);
@@ -356,6 +359,9 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .an9 .listhead, .an9 .listrow { grid-template-columns: 1.6fr 0.5fr 1.6fr 0.5fr 1.4fr;
             min-width: 700px; }
 .an10 .listhead, .an10 .listrow { grid-template-columns: 3fr 1fr; min-width: 360px; }
+/* 팩트 룰북 목록 — 항목명·종류·카테고리·상태·고친 칸·확인 날짜 */
+.an11 .listhead, .an11 .listrow { grid-template-columns: 2.4fr 0.7fr 1.2fr 1fr 0.8fr 1fr;
+            min-width: 720px; }
 /* 주제 검수 — near중복 후보 판단 카드(원본 키워드 함께 보기) */
 .dupcard { background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
            padding: 14px 16px; margin-bottom: 12px; }
@@ -410,6 +416,7 @@ def nav_menu(current):
             + item("/analysis", "분석", "analysis") + " · "
             + item("/trends", "주제·시기 트렌드", "trends") + " · "
             + item("/topics", "주제 검수", "topics") + " · "
+            + item("/facts", "팩트 룰북", "facts") + " · "
             + item("/data", "데이터", "data") + "</span>")
 
 
@@ -1143,6 +1150,8 @@ def render_data(conn):
         n_cat = one("SELECT COUNT(*) FROM rulebook_categories")
         n_ban = one("SELECT COUNT(*) FROM rulebook_banned_words")
         n_pii = one("SELECT COUNT(*) FROM rulebook_pii_patterns")
+        n_fact = one("SELECT COUNT(*) FROM rulebook_facts")
+        n_fact_todo = one("SELECT COUNT(*) FROM rulebook_facts WHERE review_status='미확인'")
         cats = conn.execute(
             "SELECT category_name, COALESCE(top_category,'-') top, "
             "COALESCE(total_post_frequency,0) freq FROM rulebook_categories "
@@ -1190,7 +1199,7 @@ def render_data(conn):
     rb_cards = ("<div class='statcards'>"
                 + card(n_cat, "카테고리") + card(n_ban, "금지어")
                 + card(n_pii, "개인정보 패턴")
-                + "<div class='statcard'><div class='n'>–</div><div class='l'>팩트(미적재)</div></div>"
+                + card(n_fact, "팩트")
                 + "</div>")
 
     def bullet_list(items, empty):
@@ -1217,8 +1226,10 @@ def render_data(conn):
                 f"<div class='panel'><h2 class='sec'>개인정보 패턴 {n_pii}</h2>"
                 f"{bullet_list(pii_items, '패턴이 없습니다.')}</div>"
                 "</div>"
-                "<p class='intro sub'>‘팩트’(학점·응시자격 등 제도 수치)는 아직 창고에 없습니다 — "
-                "원고에 정확한 수치를 넣으려면 이 팩트 시트 적재가 다음 열쇠입니다.</p>")
+                f"<p class='intro sub'>‘팩트’(학점·응시자격 등 제도 수치) {_comma(n_fact)}건이 "
+                f"창고에 있고, 그중 {_comma(n_fact_todo)}건이 아직 확인 전입니다 — "
+                "AI가 만든 초안이라 사람이 하나씩 확인해야 원고에 쓸 수 있습니다. "
+                "<a href='/facts'>팩트 룰북에서 확인하기 →</a></p>")
 
     body = f"<div class='wrap'>{warehouse}<div style='margin-top:32px'>{rulebook}</div></div>"
     return page("데이터", topbar, body)
@@ -1315,6 +1326,221 @@ def render_topics(conn):
 
 
 # ---------------------------------------------------------------------------
+# 화면 G — 팩트 룰북 (읽기 전용: 목록 /facts · 항목 상세 /fact?id=N)
+#   ★ 이 화면은 창고에 아무것도 쓰지 않는다(고치기·도장은 4차). 값은 적재 때 이미 가려져 있고,
+#     화면에서도 esc()로만 내보낸다(불변 1).
+# ---------------------------------------------------------------------------
+# 칸 이름은 엑셀·화면명세 §4 문구 그대로. 순서는 D-B — '주의메모'를 요건(개별=핵심 팩트) 바로
+# 아래로 끌어올린다(이번 모순이 요건↔주의메모↔FAQ 사이에서 났다).
+FACT_FIELDS_BY_KIND = {
+    "공통": [("requirement", "응시/취득 요건"),
+             ("caution_memo", "주의메모 (시점/예외)"),
+             ("credits", "필요 학점"),
+             ("duration", "예상 소요 기간"),
+             ("shortcut", "기간 단축 방법"),
+             ("faq_top3", "자주 묻는 질문 TOP3"),
+             ("cautions", "주의사항 / 흔한 오해")],
+    "개별": [("core_fact", "핵심 팩트"),
+             ("caution_memo", "주의메모"),
+             ("path_by_education", "학력별 경로 요약"),
+             ("emphasis", "글 작성 시 강조포인트"),
+             ("use_priority", "사용 우선순위"),
+             ("remarks", "비고")],
+}
+# 주소의 필터값(영문) → 창고의 상태·종류(한글). 정해진 목록 밖은 '전체'로 떨어진다(입력검증).
+FACT_VIEWS = {"unreviewed": "미확인", "reviewed": "확인함", "hold": "보류"}
+FACT_KINDS = {"common": "공통", "individual": "개별"}
+# 목록 순서(D-A): 공통 먼저 → 개별, 카테고리로 묶고 그 안은 항목명순
+FACT_ORDER = ("ORDER BY CASE fact_kind WHEN '공통' THEN 0 ELSE 1 END, "
+              "COALESCE(category,''), item_name, fact_id")
+
+
+def fact_badge(status):
+    """상태 배지 — 색만이 아니라 글자로도 구분. 미확인은 회색(잘못이 아니라 '아직 안 봄')."""
+    cls = {"확인함": "ok", "보류": "warn"}.get(status, "dim")
+    label = "확인함 ✓" if status == "확인함" else (status or "미확인")
+    return f"<span class='badge {cls}'>{esc(label)}</span>"
+
+
+def fact_rows(conn):
+    """목록·다음 항목 찾기가 함께 쓰는 한 벌(정렬 포함). '고친 칸'은 값이 바뀐 서로 다른 칸 수."""
+    return conn.execute(
+        "SELECT f.fact_id, f.fact_kind, f.category, f.item_name, f.review_status, f.reviewed_at, "
+        "(SELECT COUNT(DISTINCT e.field_name) FROM rulebook_fact_edits e "
+        " WHERE e.fact_id=f.fact_id) edited_n "
+        "FROM rulebook_facts f " + FACT_ORDER).fetchall()
+
+
+def _fact_progress(rows):
+    n_ok = sum(1 for r in rows if r["review_status"] == "확인함")
+    return f"<span class='badge ok'>{_comma(len(rows))}건 중 {_comma(n_ok)}건 확인함</span>"
+
+
+def _fact_load_failed(menu, title):
+    topbar = f"<div class='topbar'>{menu}<span class='t-title'>{esc(title)}</span></div>"
+    body = ("<div class='wrap'><div class='state'>팩트를 불러오지 못했습니다. "
+            "자산창고 파일을 먼저 만든 뒤 다시 열어주세요.</div></div>")
+    return page(title, topbar, body)
+
+
+def render_facts(conn, view="all", kind="all"):
+    """팩트 목록 — 51건을 끝까지 훑는 시작점. 읽기 전용."""
+    menu = nav_menu("facts")
+    # 입력검증: 쿼리값을 링크에 되비추므로 정해진 목록으로만 좁힌다(주입 차단)
+    view = view if view in FACT_VIEWS else "all"
+    kind = kind if kind in FACT_KINDS else "all"
+    try:
+        rows = fact_rows(conn)
+    except sqlite3.Error:
+        return _fact_load_failed(menu, "팩트 룰북")
+
+    topbar = (f"<div class='topbar'>{menu}<span class='t-title'>팩트 룰북</span>"
+              f"{_fact_progress(rows)}</div>")
+    if not rows:
+        body = ("<div class='wrap'><div class='state'>아직 팩트가 창고에 없습니다. "
+                "룰북 엑셀의 ‘② 팩트 룰북’ 시트를 창고에 넣는 작업(적재)을 먼저 해야 합니다. "
+                "화면에서는 넣을 수 없어요.</div></div>")
+        return page("팩트 룰북", topbar, body)
+
+    n_total = len(rows)
+    n_ok = sum(1 for r in rows if r["review_status"] == "확인함")
+    n_hold = sum(1 for r in rows if r["review_status"] == "보류")
+    n_un = n_total - n_ok - n_hold
+
+    intro = ("<p class='intro'>원고에 들어갈 사실을 사람이 하나씩 확인하는 화면입니다.</p>"
+             "<p class='intro sub'>여기서 확인·수정한 내용이 최종본입니다. 엑셀은 새 팩트를 넣는 "
+             "입구이고, 결과는 언제든 엑셀로 내보낼 수 있어요.</p>")
+
+    def card(n, label):
+        return (f"<div class='statcard'><div class='n'>{_comma(n)}</div>"
+                f"<div class='l'>{esc(label)}</div></div>")
+    cards = ("<div class='statcards'>" + card(n_total, "전체 항목") + card(n_ok, "확인함")
+             + card(n_hold, "보류") + card(n_un, "미확인") + "</div>")
+
+    def href(v, k):
+        q = [f"{n}={x}" for n, x in (("view", v), ("kind", k)) if x != "all"]
+        return "/facts?" + "&".join(q) if q else "/facts"
+
+    def on(cond):
+        return " class='on'" if cond else ""
+    filters = ("<div class='filters'>보기: "
+               f"<a href='{href('all', kind)}'{on(view == 'all')}>전체</a> · "
+               f"<a href='{href('unreviewed', kind)}'{on(view == 'unreviewed')}>미확인만</a> · "
+               f"<a href='{href('reviewed', kind)}'{on(view == 'reviewed')}>확인함</a> · "
+               f"<a href='{href('hold', kind)}'{on(view == 'hold')}>보류</a>"
+               "<br>종류: "
+               f"<a href='{href(view, 'all')}'{on(kind == 'all')}>전체</a> · "
+               f"<a href='{href(view, 'common')}'{on(kind == 'common')}>공통</a> · "
+               f"<a href='{href(view, 'individual')}'{on(kind == 'individual')}>개별</a></div>")
+
+    shown = [r for r in rows
+             if (view == "all" or r["review_status"] == FACT_VIEWS[view])
+             and (kind == "all" or r["fact_kind"] == FACT_KINDS[kind])]
+
+    head = ("<div class='listhead'><div>항목명</div><div>종류</div><div>카테고리</div>"
+            "<div>상태</div><div class='num'>고친 칸</div><div>확인 날짜</div></div>")
+    if shown:
+        body_rows = "".join(
+            f"<a class='listrow' href='/fact?id={r['fact_id']}'>"
+            f"<div class='r-title'>{esc(r['item_name'])}</div>"
+            f"<div>{esc(r['fact_kind'])}</div>"
+            f"<div>{esc(r['category'] or '-')}</div>"
+            f"<div>{fact_badge(r['review_status'])}</div>"
+            + (f"<div class='num'>{r['edited_n']}</div>" if r["edited_n"]
+               else "<div class='num num-dim'>–</div>")
+            + f"<div>{esc((r['reviewed_at'] or '')[5:10] or '–')}</div></a>"
+            for r in shown)
+        table = f"<div class='an11'><div class='tablewrap'>{head}{body_rows}</div></div>"
+    else:
+        table = ("<div class='state'>이 보기에 해당하는 항목이 없습니다. "
+                 "위에서 ‘전체’를 눌러 보세요.</div>")
+
+    honest = (f"<div class='honest'>{_comma(n_total)}건 전부 ‘미확인’에서 시작합니다 — AI가 만든 "
+              "초안이라 아직 아무도 끝까지 확인하지 않았다는 뜻입니다. 한 항목을 통째로 읽고 "
+              "도장을 찍어주세요.</div>")
+    body = f"<div class='wrap'>{intro}{cards}{filters}{table}{honest}</div>"
+    return page("팩트 룰북", topbar, body)
+
+
+def render_fact_not_found():
+    topbar = ("<div class='topbar'><a href='/facts'>← 팩트 목록</a>"
+              "<span class='t-title'>팩트 항목을 찾을 수 없음</span></div>")
+    body = ("<div class='wrap'><div class='state'>그런 팩트 항목이 없습니다."
+            "<div style='margin-top:12px'><a href='/facts'>← 팩트 목록</a></div></div></div>")
+    return page("팩트 항목을 찾을 수 없음", topbar, body)
+
+
+def render_fact(conn, id_raw):
+    """항목 상세 — 한 항목의 모든 칸을 한 열로 펼친다(칸끼리 어긋나는 곳을 사람 눈으로 찾는 화면)."""
+    try:
+        fact_id = int(id_raw)   # 입력검증: 정수만
+    except (TypeError, ValueError):
+        return render_fact_not_found()
+    try:
+        row = conn.execute("SELECT * FROM rulebook_facts WHERE fact_id=?", (fact_id,)).fetchone()
+        if row is None:
+            return render_fact_not_found()
+        all_rows = fact_rows(conn)
+        edits = conn.execute(
+            "SELECT field_name, edited_at FROM rulebook_fact_edits "
+            "WHERE fact_id=? ORDER BY edit_id DESC", (fact_id,)).fetchall()
+    except sqlite3.Error:
+        return _fact_load_failed(nav_menu("facts"), "팩트 룰북")
+
+    kind = row["fact_kind"]
+    fields = FACT_FIELDS_BY_KIND[kind]   # fact_kind는 창고에서 '공통'/'개별'로 제한됨
+    labels = dict(fields)
+
+    # 다음 미확인 → (D-C: 자동 이동은 안 하고 링크만) — 목록과 같은 순서에서 나보다 뒤인 첫 미확인
+    order = [r["fact_id"] for r in all_rows]
+    pos = order.index(fact_id) if fact_id in order else -1
+    nxt = next((r for r in all_rows[pos + 1:] if r["review_status"] == "미확인"), None)
+    next_link = (f"<a href='/fact?id={nxt['fact_id']}'>다음 미확인 →</a>" if nxt else "")
+
+    topbar = ("<div class='topbar'><a href='/facts'>← 팩트 목록</a>"
+              f"<span class='t-title'>{esc(row['item_name'])}</span>"
+              f"{fact_badge(row['review_status'])}{_fact_progress(all_rows)}{next_link}</div>")
+
+    meta_bits = [f"{esc(kind)} 팩트"]
+    if row["division"]:      # 엑셀 '구분' — 아래 칸 카드에 없으므로 여기서 보여준다
+        meta_bits.append(f"구분 {esc(row['division'])}")
+    if row["category"]:
+        meta_bits.append(f"카테고리 {esc(row['category'])}")
+    if row["excel_no"]:
+        meta_bits.append(f"엑셀 {row['excel_no']}행")
+    if row["updated_at"]:
+        meta_bits.append(f"마지막 수정 {esc(row['updated_at'][:16])}")
+    if row["review_note"]:
+        meta_bits.append(f"검수 메모 {esc(row['review_note'])}")
+
+    panels = []
+    for col, label in fields:
+        val = row[col]
+        inner = (f"<div class='ptext'>{esc(val)}</div>" if val and val.strip()
+                 else "<p class='note-empty'>이 칸은 비어 있습니다.</p>")
+        panels.append(f"<div class='panel'><h2 class='sec'>{esc(label)}</h2>{inner}</div>")
+
+    if edits:   # 지금은 0건이라 아예 안 나온다(4차에서 쌓인다)
+        items = "".join(
+            f"<li><span>{esc(labels.get(e['field_name'], e['field_name']))}</span>"
+            f"<span class='secsub'>{esc((e['edited_at'] or '')[:16])}</span></li>"
+            for e in edits)
+        history = (f"<details><summary>▸ 수정 이력 {len(edits)}건 보기</summary>"
+                   f"<ul class='masklist'>{items}</ul></details>")
+    else:
+        history = ""
+
+    body = ("<div class='wrap'>"
+            f"<h1 class='doc'>{esc(row['item_name'])}</h1>"
+            f"<div class='meta'>{' · '.join(meta_bits)}</div>"
+            "<p class='intro'>이 항목의 모든 칸을 아래에 한 번에 폈습니다. "
+            "칸끼리 말이 어긋나는 곳을 찾는 게 이 화면의 목적입니다.</p>"
+            "<p class='intro sub'>(예: 요건은 160시간인데 FAQ는 120시간이라고 적힌 경우)</p>"
+            f"{''.join(panels)}{history}</div>")
+    return page(f"팩트 — {row['item_name']}", topbar, body)
+
+
+# ---------------------------------------------------------------------------
 # HTTP 서버
 # ---------------------------------------------------------------------------
 def make_handler(db_path):
@@ -1341,6 +1567,11 @@ def make_handler(db_path):
                     self._send_html(render_trends(conn))
                 elif u.path == "/topics":
                     self._send_html(render_topics(conn))
+                elif u.path == "/facts":
+                    self._send_html(render_facts(
+                        conn, qs.get("view", ["all"])[0], qs.get("kind", ["all"])[0]))
+                elif u.path == "/fact":
+                    self._send_html(render_fact(conn, qs.get("id", [None])[0]))
                 elif u.path == "/data":
                     self._send_html(render_data(conn))
                 elif u.path == "/post":
