@@ -235,9 +235,10 @@ a:hover { text-decoration: underline; }
 h1.doc { font-size: 24px; font-weight: 800; line-height: 1.3; }
 h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
          margin: 0 0 16px; }
-/* 상태 배지(pill) — 색만이 아니라 글자로도 구분 */
+/* 상태 배지(pill) — 색만이 아니라 글자로도 구분.
+   white-space: nowrap — '성공(자동추출)'처럼 긴 상태가 좁은 칸에서 두 줄로 접히지 않게(사용 피드백). */
 .badge { display: inline-block; border-radius: 999px; padding: 4px 12px;
-         font-size: 13px; font-weight: 700; border: 1px solid; }
+         font-size: 13px; font-weight: 700; border: 1px solid; white-space: nowrap; }
 .badge.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
 .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
 .badge.danger { color: var(--danger); background: var(--danger-bg); border-color: var(--danger); }
@@ -298,17 +299,22 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .placeholder { background: #eef1f5; color: var(--muted); border-radius: 6px;
                padding: 24px 12px; text-align: center; font-size: 13px; margin-top: 8px; }
 /* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 9컬럼(제목·카페·담당자·상태·가림·문단·이미지·조회수·작성일)
-   '가림' 칸은 '다시 세기 필요'가 들어갈 만큼 넓히고 그만큼 제목을 줄임(제목은 말줄임 처리라 안전). */
+   '가림' 칸은 '다시 세기 필요'가 들어갈 만큼, '상태' 칸은 '실패-접근불가(기타)' 배지가 한 줄로
+   들어갈 만큼 넓힌다(그만큼 제목을 줄임 — 제목은 말줄임 처리라 안전). */
 .listhead, .listrow { display: grid;
-    grid-template-columns: 2fr 1fr 1fr 1.2fr 1.3fr 0.6fr 0.7fr 0.9fr 1.1fr; gap: 12px;
+    grid-template-columns: 2fr 1fr 0.8fr 1.7fr 1.2fr 0.5fr 0.55fr 0.8fr 1fr; gap: 12px;
     padding: 12px 16px; align-items: center; }
+/* 글 목록도 분석 표와 같은 규칙 — 최소 폭 아래로는 짜부러지지 않고 가로로 밀린다(.tablewrap) */
+.postlist .listhead, .postlist .listrow { min-width: 1040px; }
 .listhead { color: var(--muted); font-size: 13px; font-weight: 700;
             border-bottom: 2px solid var(--line); }
 .listrow { background: var(--paper); border-bottom: 1px solid var(--line);
            color: var(--ink); }
 .listrow:hover { background: #eef4fb; text-decoration: none; }
-.listrow .r-title { font-weight: 700; color: var(--brand);
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listrow .r-title { font-weight: 700; color: var(--brand); }
+/* 표의 칸은 접히지 않는다 — 넘치면 …로 줄이고, 표 전체는 .tablewrap으로 가로 스크롤.
+   (글 목록·분석·트렌드·팩트 표 공통. 칸마다 두 줄로 접혀 줄 높이가 들쭉날쭉하던 문제) */
+.listhead > div, .listrow > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .num-dim { color: var(--muted); }
 .num { text-align: right; }
 /* '가림' 칸에 숫자를 못 쓰는 줄(규칙이 바뀌었거나 아직 안 셈) — 회색 작은 글자.
@@ -389,6 +395,12 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .hm-t .hm-tot { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
 .hm-c { min-height: 26px; display: flex; align-items: center; justify-content: center;
         font-size: 11px; color: var(--ink); border-radius: 3px; border: 1px solid var(--line); }
+/* 그 달에 이 주제 글이 한 건도 없음 — 빈 칸으로 두면 '데이터 없음'으로 오해되므로 가운뎃점을 찍는다 */
+.hm-c.zero { color: var(--muted); }
+/* 색 범례 — 색만으로 구분되지 않게 실제 몫(%)을 글자로 함께 적는다(접근성) */
+.hm-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+             margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.hm-legend .hm-c { width: 52px; }
 /* 누를 수 없는 집계 줄(섹션 2·3·4·트렌드) — hover 강조·커서 없음 */
 .listrow.static { cursor: default; }
 .listrow.static:hover { background: var(--paper); }
@@ -739,8 +751,9 @@ def render_list(conn, view="all", sort="recent", page_no=1):
             f"{view_cell}"
             f"<div>{esc(r['publish_date'] or '-')}</div></a>")
 
-    body = (f"<div class='wrap'>{filters}{notice}{range_html}{head}"
-            f"{''.join(body_rows)}{pager_html(view, sort, page_no, n_pages)}</div>")
+    body = (f"<div class='wrap'>{filters}{notice}{range_html}"
+            f"<div class='postlist'><div class='tablewrap'>{head}{''.join(body_rows)}</div></div>"
+            f"{pager_html(view, sort, page_no, n_pages)}</div>")
     return page("추출 글 품질 확인", topbar, body)
 
 
@@ -1003,6 +1016,11 @@ def render_analysis(conn, sort="views", min_age=False):
 # ---------------------------------------------------------------------------
 # 화면 D — 주제·시기 트렌드 (전체 글의 작성일 기준, 읽기 전용)
 # ---------------------------------------------------------------------------
+# 히트맵 범위 — 화면에 적는 설명과 실제 집계가 어긋나지 않도록 여기서 한 번 정하고 둘 다 이 값을 쓴다.
+HEAT_TOP_N, HEAT_MONTHS, HEAT_MIN_MONTH = 15, 12, 30
+SEAS_MIN_TOPIC = 40   # 계절성·월초중순말 표에 넣을 최소 글 수(trends 기본값과 같은 값을 화면에도 적는다)
+
+
 def render_trends(conn):
     """월별 비중 히트맵(뜨는/식는 주제) + 월별 계절성 + 월초·중순·말 분포.
     전체 posts의 keyword+publish_date만 사용(추출 불필요). 조회수 아님 — 발행량 기준."""
@@ -1042,29 +1060,52 @@ def render_trends(conn):
         "원시 건수는 대부분 증가하기 때문. 비중을 보면 ‘상대적으로’ 뜨는/식는 주제만 남습니다.</p>")
 
     # --- 월별 비중 히트맵 (분기 '시작 vs 최근' 기울기의 함정 대체) ---
-    hm = trends.monthly_share_heatmap(recs)
+    hm = trends.monthly_share_heatmap(recs, top_n=HEAT_TOP_N, months_back=HEAT_MONTHS,
+                                      min_month_total=HEAT_MIN_MONTH)
     if hm["months"] and hm["rows"]:
         mx = hm["max_share"] or 1.0
-        gcols = f"grid-template-columns:150px repeat({len(hm['months'])},minmax(30px,1fr));"
+
+        def hm_num(sh):
+            """칸에 찍는 숫자 문자열(범례 설명도 같은 규칙을 써서 표와 어긋나지 않게)."""
+            return f"{sh:.1f}" if sh < 10 else f"{sh:.0f}"
+
+        def hm_cell(sh):
+            """한 칸 — 배경 농도 = 그 달 몫. 0은 빈 칸이 아니라 가운뎃점(데이터 없음과 구분)."""
+            alpha = min(sh / mx, 1.0) * 0.92
+            zero = " zero" if sh <= 0 else ""
+            txt = "·" if sh <= 0 else hm_num(sh)
+            return (f"<div class='hm-c{zero}' "
+                    f"style='background:rgba(var(--heat),{alpha:.2f})'>{txt}</div>")
+
+        gcols = f"grid-template-columns:150px repeat({len(hm['months'])},minmax(34px,1fr));"
         hm_head = (f"<div class='hm-row hm-head' style='{gcols}'><div class='hm-t'>주제</div>"
                    + "".join(f"<div class='hm-mh'>{esc(m[2:4])}.{esc(m[5:7])}</div>"
                              for m in hm["months"]) + "</div>")
         hm_rows = []
         for r in hm["rows"]:
-            cells = []
-            for sh in r["cells"]:
-                alpha = (min(sh / mx, 1.0) * 0.92) if mx else 0.0
-                txt = f"{sh:.0f}" if sh >= 3 else ""
-                cells.append(f"<div class='hm-c' "
-                             f"style='background:rgba(var(--heat),{alpha:.2f})'>{txt}</div>")
+            cells = "".join(hm_cell(sh) for sh in r["cells"])
             hm_rows.append(
                 f"<div class='hm-row' style='{gcols}'>"
                 f"<div class='hm-t'>{esc(r['topic'])}"
                 f"<span class='hm-tot'>{_comma(r['total'])}</span></div>"
-                f"{''.join(cells)}</div>")
-        sec_h = ("<h2 class='sec'>월별 비중 히트맵<span class='secsub'>주제(행)×월(열) · 상위 15개 "
-                 "· 칸이 진할수록 그 달 전체 글 중 그 주제 비중 높음</span></h2>"
-                 "<p class='intro sub'>매 달의 비중을 그대로 보여줍니다 — ‘시작 대비 최근’ 방식은 "
+                f"{cells}</div>")
+        # 범례 — 색만으로 구분되지 않게 실제 몫(%)을 숫자로 함께
+        legend = ("<div class='hm-legend'><span>옅을수록 적게 쓴 달 →</span>"
+                  + "".join(hm_cell(mx * f) for f in (0.0, 0.25, 0.5, 0.75, 1.0))
+                  + f"<span>← 진할수록 많이 쓴 달 (이 표에서 가장 큰 몫 {hm_num(mx)}%)</span></div>")
+        span = (f"{hm['months'][0][:4]}년 {int(hm['months'][0][5:7])}월"
+                f"~{hm['months'][-1][:4]}년 {int(hm['months'][-1][5:7])}월")
+        sec_h = ("<h2 class='sec'>월별 비중 히트맵<span class='secsub'>주제(행)×월(열)</span></h2>"
+                 "<p class='intro'>칸 안의 숫자는 <b>그 달에 우리가 올린 글 전체 중 이 주제가 "
+                 "차지한 몫(%)</b>입니다. <b>순위가 아닙니다.</b> 예를 들어 ‘5.0’은 그 달 우리 글 "
+                 "100건 중 5건이 이 주제였다는 뜻이고, ‘·’는 그 달에 이 주제 글이 한 건도 "
+                 "없었다는 뜻입니다.</p>"
+                 f"<p class='intro sub'>지금 보고 있는 범위: 글이 많은 <b>주제 {len(hm['rows'])}개</b>"
+                 f"(글 수 많은 순 상위 {HEAT_TOP_N}개까지) × <b>최근 {len(hm['months'])}개월</b>"
+                 f"({span}). 전체 글이 {HEAT_MIN_MONTH}건이 안 되는 달은 몫이 크게 튀어서 뺐습니다. "
+                 f"주제 이름 옆 작은 숫자는 그 주제의 전체 글 수예요.</p>"
+                 f"{legend}"
+                 "<p class='intro sub'>매 달의 몫을 그대로 보여줍니다 — ‘시작 대비 최근’ 방식은 "
                  "뒤늦게 생긴 주제가 늘 상승처럼 보이는 함정이 있어, 달별 색으로 추세를 직접 보게 했어요. "
                  "왼→오른쪽으로 <b>색이 짙어지면 뜨는 주제, 옅어지면 식는 주제</b>입니다.</p>"
                  f"<div class='tablewrap'><div class='heatmap'>{hm_head}{''.join(hm_rows)}</div></div>")
@@ -1073,7 +1114,7 @@ def render_trends(conn):
                  "히트맵에 쓸 월별 물량이 아직 부족합니다.</div>")
 
     # --- 월별 계절성 ---
-    seas = trends.seasonality(recs)
+    seas = trends.seasonality(recs, min_topic=SEAS_MIN_TOPIC)
     if seas:
         s_head = ("<div class='listhead'><div>주제</div><div class='num'>총 글수</div>"
                   "<div class='num'>가장 많이 쓴 달</div><div class='num'>그 달 비중</div></div>")
@@ -1084,15 +1125,20 @@ def render_trends(conn):
             f"<div class='num'>{it['peak_pct']:.0f}%</div></div>"
             for it in seas)
         sec_s = ("<h2 class='sec'>월별 계절성<span class='secsub'>특정 달에 쏠린 주제 · "
-                 "쏠림 큰 순 상위 10</span></h2>"
-                 "<p class='intro sub'>자격증은 시험·접수 일정이 있어 특정 달에 발행이 몰립니다. "
+                 "쏠림 큰 순</span></h2>"
+                 "<p class='intro'>‘그 달 비중’은 <b>그 주제로 쓴 글 전체 중 그 달에 쓴 몫(%)</b>"
+                 "입니다(순위 아님). 12달에 고르게 썼다면 8%쯤이니, 이보다 크면 그 달에 몰아 쓴 "
+                 "것입니다.</p>"
+                 f"<p class='intro sub'>글이 {SEAS_MIN_TOPIC}건 이상인 주제만, 쏠림 큰 순으로 "
+                 f"{len(seas)}개 보여줍니다(연도 구분 없이 1~12월로 합산). "
+                 "자격증은 시험·접수 일정이 있어 특정 달에 발행이 몰립니다. "
                  "수요 정점보다 앞서 쓰려면 이 달 <b>한두 달 전</b>이 후보예요.</p>"
                  f"<div class='an7'><div class='tablewrap'>{s_head}{s_rows}</div></div>")
     else:
         sec_s = ""
 
     # --- 월초/중순/말 ---
-    im = trends.intramonth(recs)
+    im = trends.intramonth(recs, min_topic=SEAS_MIN_TOPIC)
     base = im["baseline"]
 
     def dom_table(items):
@@ -1111,8 +1157,11 @@ def render_trends(conn):
 
     sec_d = ("<h2 class='sec'>월초·중순·말 분포<span class='secsub'>주제를 월내 어느 시기에 "
              "발행했나</span></h2>"
+             "<p class='intro'>표의 %는 <b>그 주제로 쓴 글 전체 중 월초·중순·월말에 각각 쓴 "
+             "몫</b>입니다(순위 아님). 한 줄의 세 숫자를 더하면 100%가 됩니다.</p>"
              f"<p class='intro sub'>전체 기준선: 월초 {base[0]:.0f}% · 중순 {base[1]:.0f}% · "
-             f"월말 {base[2]:.0f}%. 아래는 기준선보다 한쪽으로 치우친 주제입니다.</p>"
+             f"월말 {base[2]:.0f}%. 아래는 글이 {SEAS_MIN_TOPIC}건 이상인 주제 중 기준선보다 "
+             "한쪽으로 치우친 주제입니다.</p>"
              "<p class='intro sub' style='margin-top:8px'>월초에 몰아 쓴 주제</p>"
              f"{dom_table(im['early'])}"
              "<p class='intro sub' style='margin-top:12px'>월말에 몰아 쓴 주제</p>"

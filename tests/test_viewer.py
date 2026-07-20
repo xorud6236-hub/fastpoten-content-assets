@@ -329,6 +329,13 @@ class TestViewerInvariant(unittest.TestCase):
             urllib.request.urlopen(req, timeout=5)
         self.assertIn(cm.exception.code, (405, 501))
 
+    def test_tables_scroll_instead_of_wrapping(self):
+        # 사용 피드백 1차 — 좁아지면 칸이 접히는 게 아니라 표가 가로로 밀린다(글 목록·분석 공통)
+        for path in ("/", "/analysis"):
+            h = self._get(path)
+            self.assertIn("class='tablewrap'", h)
+            self.assertIn(".listhead > div, .listrow > div { overflow: hidden;", h)
+
     def test_topics_renders_and_no_pii(self):
         h = self._get("/topics")
         self.assertIn("주제 검수", h)
@@ -468,6 +475,16 @@ class TestListPagingAndMaskCount(unittest.TestCase):
         self.assertIn("1건 모두 보는 중", h)
         conn.close()
 
+    # ---- 표 폭·줄바꿈(사용 피드백 1차) ----
+    def test_list_is_wrapped_and_status_badge_never_wraps(self):
+        h = viewer.render_list(self.conn)
+        # 목록도 분석 표처럼 가로 스크롤로 감싸고 최소 폭을 준다(칸이 짜부러지지 않음)
+        self.assertIn("<div class='postlist'><div class='tablewrap'>", h)
+        self.assertIn(".postlist .listhead, .postlist .listrow { min-width:", h)
+        # '성공(자동추출)' 배지가 두 줄로 접히던 문제 — 줄바꿈 방지
+        self.assertRegex(h, r"\.badge \{[^}]*white-space: nowrap")
+        self.assertIn("성공(자동추출)", h)
+
     # ---- 성능의 본체: 목록은 본문 파일을 열지 않는다 ----
     def test_list_does_not_read_body_files(self):
         called = []
@@ -482,6 +499,71 @@ class TestListPagingAndMaskCount(unittest.TestCase):
         finally:
             viewer.mask_type_counts = orig
         self.assertEqual(called, [])   # 글마다 다시 세지 않음(36.3초의 원인이었다)
+
+
+class TestTrendsHeatmapExplain(unittest.TestCase):
+    """히트맵 숫자 설명(사용 피드백 3차) — 사용자가 칸의 몫(%)을 '순위'로 오해했던 회귀 방지.
+
+    글이 30건 넘는 달이 두 달 있어야 히트맵이 그려지므로 80건을 넣는다(임시 창고, 읽기 전용).
+    2026-06: 흔한 주제 39건 + 드문 주제 1건(2.5%) / 2026-07: 다른 주제 40건."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "heat.sqlite3"))
+        db.init_db(cls.conn)
+        rows, pid = [], 1
+        for i in range(39):
+            rows.append((pid, f"글{pid}", "사회복지사2급", f"2026-06-{i % 28 + 1:02d}"))
+            pid += 1
+        rows.append((pid, f"글{pid}", "한국사능력검정", "2026-06-15"))   # 그 달 1/40 = 2.5%
+        pid += 1
+        for i in range(40):
+            rows.append((pid, f"글{pid}", "보육교사2급", f"2026-07-{i % 28 + 1:02d}"))
+            pid += 1
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, keyword, publish_date) VALUES (?,?,?,?)", rows)
+        cls.conn.commit()
+        cls.html = viewer.render_trends(cls.conn)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_says_the_number_is_not_a_rank(self):
+        # ★ 실제 오해가 '순위'였다 — 이 말이 화면에서 사라지면 실패
+        self.assertIn("순위가 아닙니다", self.html)
+        self.assertIn("차지한 몫(%)", self.html)
+
+    def test_says_how_many_topics_and_months_are_shown(self):
+        # 몇 개 주제 · 몇 개월치를 보고 있는지 화면에 적혀 있다
+        self.assertIn("주제 3개", self.html)
+        self.assertIn("상위 15개까지", self.html)
+        self.assertIn("최근 2개월", self.html)
+        self.assertIn("2026년 6월~2026년 7월", self.html)
+        self.assertIn("30건이 안 되는 달은", self.html)
+
+    def test_small_share_shows_number_and_zero_shows_dot(self):
+        # 3% 미만이라 비어 보이던 칸에도 숫자가 찍히고, 0은 빈 칸이 아니라 가운뎃점
+        self.assertIn(">2.5</div>", self.html)
+        self.assertIn("class='hm-c zero'", self.html)
+        self.assertIn(">·</div>", self.html)
+
+    def test_has_color_legend_with_numbers(self):
+        # 색만으로 구분되지 않게 범례에 실제 몫(%)을 함께 적는다
+        self.assertIn("hm-legend", self.html)
+        self.assertIn("진할수록 많이 쓴 달", self.html)
+        # 칸의 숫자는 10 이상이면 반올림한 정수(39/40 = 97.5% → 98)
+        self.assertIn(">98</div>", self.html)
+        # 범례 캡션은 이 표의 실제 최댓값을 말한다(7월 40/40 = 100%)
+        self.assertIn("가장 큰 몫 100%", self.html)
+
+    def test_other_trend_numbers_are_explained(self):
+        # 같은 화면의 다른 숫자도 무슨 숫자인지 한 줄씩 있다 + 불변 3(성과로 단정 안 함)
+        self.assertIn("월초·중순·월말에 각각 쓴", self.html)
+        self.assertIn("발행 습관", self.html)
+        self.assertNotIn("성과 등급", self.html)
 
 
 class TestFactsScreens(unittest.TestCase):
