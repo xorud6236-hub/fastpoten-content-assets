@@ -501,6 +501,168 @@ class TestListPagingAndMaskCount(unittest.TestCase):
         self.assertEqual(called, [])   # 글마다 다시 세지 않음(36.3초의 원인이었다)
 
 
+class TestListFilters(unittest.TestCase):
+    """목록 걸러 보기(2차) — 담당자·카페·주제. 임시 창고만 사용(실제 창고에 쓰지 않음).
+
+    ★ 이름은 전부 가짜다(저장소 공개 이력 — 실제 명단을 테스트에 옮겨 적지 않는다).
+    글 10건: 카페하나 6(담당가 4·담당나 2, 전부 주제 '플래너') / 카페둘 4(담당나, 주제 '보육교사2급')."""
+
+    CAFE1, CAFE2 = "가상카페하나", "가상카페둘"
+    STAFF1, STAFF2 = "가상담당가", "가상담당나"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "filter.sqlite3"))
+        db.init_db(cls.conn)
+        raw = os.path.join(cls.tmp, "body_raw.txt")      # 목록 대상 조건(body_raw_path IS NOT NULL)
+        _write(raw, "본문")
+        rows = []
+        for i in range(1, 5):        # 1~4: 카페하나 · 담당가 · '플래너 자격증'
+            rows.append((i, f"글{i}", "플래너 자격증", cls.CAFE1, cls.STAFF1))
+        for i in range(5, 7):        # 5~6: 카페하나 · 담당나 · '플래너비용'(같은 주제, 다른 원본 키워드)
+            rows.append((i, f"글{i}", "플래너비용", cls.CAFE1, cls.STAFF2))
+        for i in range(7, 11):       # 7~10: 카페둘 · 담당나 · 다른 주제
+            rows.append((i, f"글{i}", "보육교사2급 취업", cls.CAFE2, cls.STAFF2))
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, keyword, cafe_name, staff_name, "
+            "extraction_status, body_raw_path) VALUES (?,?,?,?,?,'성공(자동추출)',?)",
+            [r + (raw,) for r in rows])
+        cls.conn.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_filter_by_staff(self):
+        h = viewer.render_list(self.conn, staff=self.STAFF1)
+        self.assertEqual(h.count("class='listrow'"), 4)
+        self.assertIn("4건 모두 보는 중", h)
+        self.assertIn("총 10건", h)            # 상단 배지는 창고 전체 기준 그대로
+
+    def test_filter_by_cafe(self):
+        h = viewer.render_list(self.conn, cafe=self.CAFE1)
+        self.assertEqual(h.count("class='listrow'"), 6)
+        self.assertIn("6건 모두 보는 중", h)
+
+    def test_filter_by_topic_uses_same_normalize(self):
+        # 주제 '플래너'에는 원본 키워드 2종('플래너 자격증'·'플래너비용')이 묶인다 → 6건
+        import keyword_normalize as kn
+        self.assertEqual(kn.normalize("플래너 자격증"), "플래너")
+        self.assertEqual(kn.normalize("플래너비용"), "플래너")
+        h = viewer.render_list(self.conn, topic="플래너")
+        self.assertEqual(h.count("class='listrow'"), 6)
+        self.assertIn("6건 모두 보는 중", h)
+
+    def test_topic_filter_shows_member_keywords(self):
+        # ★ 헌장 디자인 규칙 — 자동으로 묶은 값은 원본과 대조할 길을 같은 화면에 둔다
+        h = viewer.render_list(self.conn, topic="플래너")
+        self.assertIn("원본 키워드 2종이 묶여 있습니다", h)
+        self.assertIn("플래너 자격증(4)", h)
+        self.assertIn("플래너비용(2)", h)
+
+    def test_two_conditions_are_all_or_nothing(self):
+        # 두 조건은 '모두 만족'(그리고) — 주제 플래너 ∩ 담당나 = 2건
+        h = viewer.render_list(self.conn, topic="플래너", staff=self.STAFF2)
+        self.assertEqual(h.count("class='listrow'"), 2)
+        self.assertIn("2건 모두 보는 중", h)
+
+    def test_condition_chip_shows_kind_before_value(self):
+        h = viewer.render_list(self.conn, topic="플래너", staff=self.STAFF2)
+        self.assertIn("걸러 보는 중:", h)
+        self.assertIn("주제 ‘플래너’", h)                  # 종류가 값 앞에
+        self.assertIn(f"담당자 ‘{self.STAFF2}’", h)
+        self.assertIn("모두 지우기", h)                     # 조건 2개 이상일 때만
+        self.assertIn("class='fchip'", h)
+
+    def test_single_condition_has_no_clear_all(self):
+        h = viewer.render_list(self.conn, cafe=self.CAFE1)
+        self.assertIn(f"카페 ‘{self.CAFE1}’", h)
+        self.assertNotIn("모두 지우기", h)
+
+    def test_zero_result_keeps_condition_row(self):
+        # 걸러서 0건이어도 조건 줄은 남는다 — 무엇 때문에 비었는지 안 보이면 되돌릴 수 없다
+        h = viewer.render_list(self.conn, cafe=self.CAFE2, staff=self.STAFF1)
+        self.assertEqual(h.count("class='listrow'"), 0)
+        self.assertIn("걸러 보는 중:", h)
+        self.assertIn("고른 조건에 맞는 글이 없습니다.", h)
+        self.assertIn("모두 지우기", h)
+
+    def test_unknown_condition_says_so(self):
+        h = viewer.render_list(self.conn, topic="창고에없는주제")
+        self.assertIn("그런 주제가 창고에 없습니다", h)
+        self.assertIn("걸러 보는 중:", h)
+
+    def test_filters_are_bound_parameters_not_string_sql(self):
+        # ★ 입력검증 — 따옴표·SQL 조각을 넣어도 그대로 '없는 값'일 뿐(주입되지 않는다)
+        for bad in ("' OR 1=1 --", "'; DROP TABLE posts; --", "%"):
+            h = viewer.render_list(self.conn, staff=bad)
+            self.assertEqual(h.count("class='listrow'"), 0)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"], 10)
+
+    def test_filter_value_length_is_capped(self):
+        long = "가" * 200
+        h = viewer.render_list(self.conn, staff=long)
+        self.assertEqual(h.count("class='listrow'"), 0)
+        self.assertNotIn("가" * (viewer.MAX_FILTER_LEN + 1), h)   # 상한을 넘겨 되비추지 않음
+
+    def test_filter_is_carried_by_view_sort_and_paging_links(self):
+        h = viewer.render_list(self.conn, topic="플래너")
+        self.assertIn("topic=", h)                 # 보기·정렬 링크가 조건을 달고 다닌다
+        self.assertIn("view=fail&", h)             # 조건이 뒤에 붙은 형태
+
+    def test_apply_is_a_get_form_never_post(self):
+        # ★ 읽기 전용 — [적용]은 GET 폼(주소가 바뀔 뿐 창고에 쓰지 않는다)
+        h = viewer.render_list(self.conn)
+        self.assertIn("method='get'", h)
+        self.assertNotIn("method='post'", h)
+        self.assertIn("<button type='submit'>적용</button>", h)
+
+    def test_board_is_not_offered_as_a_filter(self):
+        # 게시판은 값이 대부분 비어 있어 넣지 않기로 했다(넣으면 대부분 글이 사라져 보인다)
+        h = viewer.render_list(self.conn)
+        self.assertIn("name='cafe'", h)
+        self.assertIn("name='staff'", h)
+        self.assertNotIn("name='board", h)
+
+    def test_filtered_list_does_not_read_body_files_or_write(self):
+        # 성능(36초→0.06초의 본체)과 읽기 전용을 함께 지킨다
+        called = []
+        orig = viewer.mask_type_counts
+        viewer.mask_type_counts = lambda *a, **k: called.append(a)
+        try:
+            viewer.render_list(self.conn, topic="플래너", staff=self.STAFF2)
+        finally:
+            viewer.mask_type_counts = orig
+        self.assertEqual(called, [])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"], 10)
+
+    def test_filtered_list_has_no_pii(self):
+        for h in (viewer.render_list(self.conn, topic="플래너"),
+                  viewer.render_list(self.conn, cafe=self.CAFE1),
+                  viewer.render_list(self.conn, staff=self.STAFF1)):
+            self.assertNotIn(PII_PHONE, h)
+            self.assertNotIn(PII_NAME, h)
+            self.assertNotIn(OPENCHAT, h)
+
+    def test_analysis_staff_name_links_to_filtered_list(self):
+        # 분석 담당자별 표의 이름이 그 담당자 글 목록으로 가는 입구가 된다
+        self.conn.execute(
+            "INSERT INTO reference_signals (post_id, view_count, collected_from_sheet) "
+            "VALUES (1, 100, ?)", (viewer.AUTO_VIEW_MARK,))
+        self.conn.commit()
+        try:
+            h = viewer.render_analysis(self.conn)
+            self.assertIn("staff=", h)
+            self.assertIn("담당자 이름을 누르면", h)
+        finally:
+            self.conn.execute("DELETE FROM reference_signals WHERE post_id=1")
+            self.conn.commit()
+
+
 class TestTrendsHeatmapExplain(unittest.TestCase):
     """히트맵 숫자 설명(사용 피드백 3차) — 사용자가 칸의 몫(%)을 '순위'로 오해했던 회귀 방지.
 
@@ -558,6 +720,11 @@ class TestTrendsHeatmapExplain(unittest.TestCase):
         self.assertIn(">98</div>", self.html)
         # 범례 캡션은 이 표의 실제 최댓값을 말한다(7월 40/40 = 100%)
         self.assertIn("가장 큰 몫 100%", self.html)
+
+    def test_topic_names_link_to_filtered_post_list(self):
+        # 2차 — 히트맵의 주제 이름이 그 주제로 걸러진 글 목록으로 가는 입구가 된다
+        self.assertIn("href='/?topic=", self.html)
+        self.assertIn("주제 이름을 누르면", self.html)
 
     def test_other_trend_numbers_are_explained(self):
         # 같은 화면의 다른 숫자도 무슨 숫자인지 한 줄씩 있다 + 불변 3(성과로 단정 안 함)

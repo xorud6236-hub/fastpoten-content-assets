@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db import DEFAULT_DB_PATH, ROOT_DIR, get_connection  # noqa: E402
+import keyword_normalize as kn  # noqa: E402  (주제 묶기 단일 출처 — 트렌드·분석·목록이 같은 함수를 쓴다)
 import masking  # noqa: E402
 import trends  # noqa: E402  (시기별 주제 트렌드·주제별 조회수 — 정규화는 keyword_normalize 단일 출처)
 
@@ -334,6 +335,24 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .filters { margin: 16px 0; font-size: 14px; }
 .filters a.on { font-weight: 800; text-decoration: underline; }
 .filters .note { color: var(--muted); font-size: 13px; margin-left: 8px; }
+/* 걸러 보기 줄 — 고르는 칸 + [적용] 한 벌(GET 폼, 자바스크립트 0).
+   좁은 화면에서는 칸이 위아래로 접히고 손가락 크기(44px)를 지킨다. */
+.filters.pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.filters.pick label { display: inline-flex; align-items: center; gap: 6px; }
+.filters select, .filters button { font-family: var(--font); font-size: 15px;
+         min-height: 44px; border-radius: 6px; }
+.filters select { padding: 0 8px; border: 1px solid var(--line); background: var(--paper);
+         color: var(--ink); max-width: 220px; }
+.filters button { font-weight: 700; color: #fff; background: var(--brand);
+         border: 1px solid var(--brand); padding: 0 20px; cursor: pointer; }
+/* 걸러 놓은 조건 — 무엇 때문에 목록이 줄었는지 글자로 알린다(색만으로 구분하지 않음).
+   ✕는 이 화면의 주 동작이라 최소 44×44. 조건이 많으면 두 줄로 접혀 내려간다. */
+.fchips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+          margin: 12px 0 4px; font-size: 14px; }
+.fchip { display: inline-flex; align-items: center; border: 1px solid var(--line);
+         border-radius: 999px; background: var(--paper); padding-left: 12px; }
+.fchip .x { display: inline-flex; align-items: center; justify-content: center;
+            min-width: 44px; min-height: 44px; font-weight: 800; }
 .state { background: var(--paper); border: 1px solid var(--line);
          border-radius: 8px; padding: 32px; text-align: center; color: var(--muted); }
 /* 상단 띠 화면 이동 메뉴 — 현재 화면은 굵게·밑줄(색만이 아니라 글자로도 구분) */
@@ -616,12 +635,21 @@ def render_not_found():
 # 화면 B — 목록
 # ---------------------------------------------------------------------------
 PAGE_SIZE = 100   # 한 쪽에 보이는 글 수(사용자 확정). 바꾸려면 이 숫자 하나만.
+# 걸러 보기 값(담당자·카페·주제)은 창고에 든 자유 문자열이라 목록으로 좁힐 수 없다.
+# 대신 ①길이 상한 ②반드시 ? 바인딩(문자열 결합 금지) ③화면 출력은 esc() 로 막는다.
+MAX_FILTER_LEN = 60
+FILTER_FIELD = {"주제": "topic", "담당자": "staff", "카페": "cafe"}
 
 
-def render_list(conn, view="all", sort="recent", page_no=1):
+def _clip(v):
+    return (v or "").strip()[:MAX_FILTER_LEN]
+
+
+def render_list(conn, view="all", sort="recent", page_no=1, cafe="", staff="", topic=""):
     # 입력검증: 쿼리값을 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
     view = view if view in ("ok", "fail") else "all"
     sort = "views" if sort == "views" else "recent"
+    cafe, staff, topic = _clip(cafe), _clip(staff), _clip(topic)
     # 쪽 번호도 같은 결 — 정수만 통과. 범위 밖은 아래에서 가장 가까운 쪽으로(오류 화면 없음)
     try:
         page_no = int(page_no)
@@ -630,19 +658,48 @@ def render_list(conn, view="all", sort="recent", page_no=1):
     try:
         # ★ 조회수(참고 신호)를 한 번의 JOIN으로(행마다 재조회 없음 — N+1 회피).
         # ★ 가림 건수는 저장된 값(mask_count)을 그대로 읽는다 — 목록은 본문 파일을 열지 않는다.
+        # ★ 걸러 보기(카페·담당자)는 SQL where + ? 바인딩. 값은 절대 문자열로 붙이지 않는다.
+        where, params = ["p.body_raw_path IS NOT NULL"], [AUTO_VIEW_MARK]
+        if cafe:
+            where.append("p.cafe_name = ?")
+            params.append(cafe)
+        if staff:
+            where.append("p.staff_name = ?")
+            params.append(staff)
         rows = conn.execute(
-            "SELECT p.post_id, p.title, p.cafe_name, p.staff_name, p.extraction_status, "
+            "SELECT p.post_id, p.title, p.keyword, p.cafe_name, p.staff_name, "
+            "p.extraction_status, "
             "p.publish_date, p.mask_count, p.mask_rules_fingerprint, rs.view_count AS views, "
             "(SELECT COUNT(*) FROM post_paragraphs pp WHERE pp.post_id=p.post_id) para_n, "
             "(SELECT COUNT(*) FROM post_images pi WHERE pi.post_id=p.post_id) img_n "
             "FROM posts p "
             "LEFT JOIN reference_signals rs "
             "  ON rs.post_id=p.post_id AND rs.collected_from_sheet=? "
-            "WHERE p.body_raw_path IS NOT NULL "
-            "ORDER BY p.updated_at DESC, p.post_id DESC",
-            (AUTO_VIEW_MARK,)).fetchall()
+            "WHERE " + " AND ".join(where)
+            + " ORDER BY p.updated_at DESC, p.post_id DESC", params).fetchall()
         # 지금의 가림 규칙 지문 — 요청당 딱 한 번(질의 2번). 저장된 지문과 다르면 옛 숫자다.
         now_fp = masking.rules_fingerprint(conn)
+        # 상단 배지·안내 줄은 '창고 전체' 기준을 유지한다(걸러진 숫자는 범위 줄이 말한다 — 명세 §4-2).
+        tot = conn.execute(
+            "SELECT COUNT(*) n, SUM(CASE WHEN extraction_status LIKE '성공%' THEN 1 ELSE 0 END) ok "
+            "FROM posts WHERE body_raw_path IS NOT NULL").fetchone()
+        n_stale = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE body_raw_path IS NOT NULL "
+            "AND (mask_count IS NULL OR mask_rules_fingerprint IS NOT ?)", (now_fp,)).fetchone()[0]
+        # 고르는 칸의 선택지 — 목록에 실제로 나오는 글에서만 뽑는다(고르면 0건이 되는 값이 없도록)
+        pick_sql = ("SELECT DISTINCT {c} v FROM posts WHERE body_raw_path IS NOT NULL "
+                    "AND {c} IS NOT NULL AND {c} <> '' ORDER BY v")
+        cafes = [r["v"] for r in conn.execute(pick_sql.format(c="cafe_name"))]
+        staffs = [r["v"] for r in conn.execute(pick_sql.format(c="staff_name"))]
+        # 주제 걸러 보기 — 트렌드·분석과 같은 함수(kn.normalize)로 원본 키워드를 묶어 대조한다.
+        #   주제는 창고에 저장된 값이 아니라 '묶은 결과'라 SQL로 못 거른다 → 원본 키워드 목록으로 환원.
+        members = []
+        if topic:
+            members = [(r["keyword"], r["n"]) for r in conn.execute(
+                "SELECT keyword, COUNT(*) n FROM posts WHERE keyword IS NOT NULL "
+                "GROUP BY keyword") if kn.normalize(r["keyword"]) == topic]
+            kwset = {k for k, _ in members}
+            rows = [r for r in rows if r["keyword"] in kwset]
     except sqlite3.Error:
         # 자산창고 파일/테이블을 못 열 때(코드 용어 노출 금지)
         topbar = "<div class='topbar'><span class='t-title'>추출 글 품질 확인</span></div>"
@@ -655,8 +712,7 @@ def render_list(conn, view="all", sort="recent", page_no=1):
     if sort == "views":  # 조회수 높은 순(없는 글은 뒤로)
         rows.sort(key=lambda r: (r["views"] is not None, r["views"] or 0), reverse=True)
 
-    n_total = len(rows)
-    n_ok = sum(1 for r in rows if is_success(r["extraction_status"]))
+    n_total, n_ok = tot["n"], (tot["ok"] or 0)
     n_fail = n_total - n_ok
     topbar = ("<div class='topbar'>" + nav_menu("list")
               + "<span class='t-title'>추출 글 품질 확인</span>"
@@ -681,20 +737,66 @@ def render_list(conn, view="all", sort="recent", page_no=1):
 
     def on(cond):
         return " class='on'" if cond else ""
-    vq = f"&view={view}" if view != "all" else ""
+
+    def href(**over):
+        """지금 조건을 그대로 달고 다니는 목록 주소(바뀌는 것만 넘긴다). 쪽은 언제나 1쪽부터."""
+        d = dict(view=view, sort=sort, page_no=1, cafe=cafe, staff=staff, topic=topic)
+        d.update(over)
+        return list_href(**d)
     filters = ("<div class='filters'>보기: "
-               f"<a href='/'{on(view=='all' and sort=='recent')}>전체</a> · "
-               f"<a href='/?view=ok'{on(view=='ok')}>성공만</a> · "
-               f"<a href='/?view=fail'{on(view=='fail')}>실패만</a>"
+               f"<a href='{href(view='all')}'{on(view=='all')}>전체</a> · "
+               f"<a href='{href(view='ok')}'{on(view=='ok')}>성공만</a> · "
+               f"<a href='{href(view='fail')}'{on(view=='fail')}>실패만</a>"
                "&nbsp;&nbsp;|&nbsp;&nbsp;정렬: "
-               f"<a href='/?sort=recent{vq}'{on(sort=='recent')}>최신순</a> · "
-               f"<a href='/?sort=views{vq}'{on(sort=='views')}>조회수 높은 순</a>"
+               f"<a href='{href(sort='recent')}'{on(sort=='recent')}>최신순</a> · "
+               f"<a href='{href(sort='views')}'{on(sort=='views')}>조회수 높은 순</a>"
                "<span class='note'>조회수는 참고 신호입니다.</span></div>")
     # 보기·정렬 링크에는 page를 달지 않는다 → 보기·정렬을 바꾸면 언제나 1쪽부터
-    # (다른 목록이 됐는데 27쪽에 서 있으면 텅 빈 화면이 뜬다).
+    # (다른 목록이 됐는데 27쪽에 서 있으면 텅 빈 화면이 뜬다). 걸러 놓은 조건은 그대로 따라간다.
 
-    # ① 안내 줄 — 다시 세야 하는 글이 있을 때만. 건수는 이 쪽이 아니라 창고 전체 기준(할 일의 크기).
-    n_stale = sum(1 for r in rows if stale(r))
+    # ①-a 걸러 보기 줄 — 고르는 칸 + [적용] 하나(GET 폼. 자바스크립트가 없어 고른 즉시 이동 못 함).
+    #   게시판은 넣지 않는다(값이 대부분 비어 있어 넣으면 대부분 글이 사라져 보인다).
+    def picker(name, cur, values, all_label):
+        opts = [f"<option value=''>{all_label}</option>"]
+        opts += [f"<option value='{esc(v)}'{' selected' if v == cur else ''}>{esc(v)}</option>"
+                 for v in values]
+        return f"<select name='{name}'>{''.join(opts)}</select>"
+    keep = "".join(
+        f"<input type='hidden' name='{k}' value='{esc(v)}'>"
+        for k, v in (("view", view if view != "all" else ""),
+                     ("sort", sort if sort != "recent" else ""),
+                     ("topic", topic)) if v)
+    pick = ("<form class='filters pick' method='get' action='/'>걸러 보기: "
+            f"<label>카페 {picker('cafe', cafe, cafes, '카페 전체')}</label>"
+            f"<label>담당자 {picker('staff', staff, staffs, '담당자 전체')}</label>"
+            f"{keep}<button type='submit'>적용</button>"
+            "<span class='note'>주제로 걸러 보려면 트렌드·분석 화면에서 주제 이름을 누르세요."
+            "</span></form>")
+
+    # ①-b 조건 줄 — 무엇 때문에 목록이 줄었는지. 0건이어도 이 줄은 지우지 않는다(명세 §4-3).
+    conds = [(k, v) for k, v in (("주제", topic), ("담당자", staff), ("카페", cafe)) if v]
+    if conds:
+        chip_parts = []
+        for k, v in conds:
+            drop = href(**{FILTER_FIELD[k]: ""})     # 그 조건만 빠진 목록으로
+            chip_parts.append(f"<span class='fchip'>{k} ‘{esc(v)}’"
+                              f"<a class='x' href='{drop}' title='{k} 조건 지우기'>✕</a></span>")
+        chips = "".join(chip_parts)
+        clear_href = href(cafe="", staff="", topic="")
+        clear = (f"<a href='{clear_href}'>모두 지우기</a>" if len(conds) > 1 else "")
+        cond_html = f"<div class='fchips'>걸러 보는 중: {chips}{clear}</div>"
+    else:
+        clear_href, cond_html = "/", ""
+    # 주제는 자동으로 묶은 값이다 — 사람이 원본과 대조할 수 있게 묶인 원본 키워드를 같은 화면에 둔다
+    # (헌장 디자인 규칙. /topics의 원본 키워드 표기와 같은 방식).
+    if topic and members:
+        ms = sorted(members, key=lambda x: -x[1])
+        head_kw = ", ".join(f"{esc(k)}({n})" for k, n in ms[:12])
+        more_kw = f" 외 {len(ms) - 12}개" if len(ms) > 12 else ""
+        cond_html += (f"<p class='intro sub'>주제 ‘{esc(topic)}’에는 원본 키워드 {len(ms)}종이 "
+                      f"묶여 있습니다(괄호=글 수): {head_kw}{more_kw}</p>")
+
+    # ② 안내 줄 — 다시 세야 하는 글이 있을 때만. 건수는 이 쪽이 아니라 창고 전체 기준(할 일의 크기).
     notice = (f"<p class='intro sub'>가림 건수를 다시 세야 하는 글이 {_comma(n_stale)}건 있습니다"
               "(가림 규칙이 바뀌었거나, 아직 세지 않은 글입니다). "
               "클로드 코드에 ‘가림 건수 다시 세 줘’라고 말하면 정리됩니다.</p>") if n_stale else ""
@@ -703,9 +805,24 @@ def render_list(conn, view="all", sort="recent", page_no=1):
     matched = [r for r in rows if match(r)]
     n_shown = len(matched)
     if n_shown == 0:
-        what = {"ok": "성공만", "fail": "실패만"}.get(view, "전체")
-        body = (f"<div class='wrap'>{filters}<div class='state'>{what} 보기에 해당하는 글이 "
-                "없습니다. 위에서 ‘전체’를 눌러 보세요.</div></div>")
+        # 조건이 창고에 아예 없는 값일 때는 그 사실부터 말한다(주소를 손으로 고친 경우 등)
+        unknown = [(k, v) for k, v in (("카페", cafe if cafe not in cafes else ""),
+                                       ("담당자", staff if staff not in staffs else ""),
+                                       ("주제", topic if not members else "")) if v]
+        if unknown:
+            k, v = unknown[0]
+            msg = f"‘{esc(v)}’(으)로 걸러 보려 했지만 그런 {k}가 창고에 없습니다."
+        elif conds:
+            msg = ("고른 조건에 맞는 글이 없습니다. 조건: "
+                   + " · ".join(f"{k} ‘{esc(v)}’" for k, v in conds)
+                   + ". 조건을 하나씩 지워보세요.")
+        else:
+            what = {"ok": "성공만", "fail": "실패만"}.get(view, "전체")
+            msg = f"{what} 보기에 해당하는 글이 없습니다. 위에서 ‘전체’를 눌러 보세요."
+        undo = (f"<div style='margin-top:12px'><a href='{clear_href}'>모두 지우기</a></div>"
+                if conds else "")
+        body = (f"<div class='wrap'>{filters}{pick}{cond_html}"
+                f"<div class='state'>{msg}{undo}</div></div>")
         return page("추출 글 품질 확인", topbar, body)
 
     n_pages = -(-n_shown // PAGE_SIZE)                  # 올림 나눗셈
@@ -751,21 +868,35 @@ def render_list(conn, view="all", sort="recent", page_no=1):
             f"{view_cell}"
             f"<div>{esc(r['publish_date'] or '-')}</div></a>")
 
-    body = (f"<div class='wrap'>{filters}{notice}{range_html}"
+    body = (f"<div class='wrap'>{filters}{pick}{cond_html}{notice}{range_html}"
             f"<div class='postlist'><div class='tablewrap'>{head}{''.join(body_rows)}</div></div>"
-            f"{pager_html(view, sort, page_no, n_pages)}</div>")
+            f"{pager_html(view, sort, page_no, n_pages, cafe, staff, topic)}</div>")
     return page("추출 글 품질 확인", topbar, body)
 
 
-def list_href(view, sort, page_no):
-    """목록 링크 — 지금 보기·정렬을 그대로 달고 다닌다(쪽을 옮겨도 유지). 값은 이미 좁혀진 리터럴."""
-    q = [f"{k}={v}" for k, v in (("view", view), ("sort", sort)) if v not in ("all", "recent")]
+def list_href(view="all", sort="recent", page_no=1, cafe="", staff="", topic=""):
+    """목록 링크 — 지금 보기·정렬·걸러 놓은 조건을 그대로 달고 다닌다(쪽을 옮겨도 유지).
+    보기·정렬은 좁혀진 리터럴이고, 카페·담당자·주제는 자유 문자열이라 urlencode로 감싼다."""
+    q = [(k, v) for k, v in (("view", view), ("sort", sort)) if v not in ("all", "recent")]
+    q += [(k, v) for k, v in (("cafe", cafe), ("staff", staff), ("topic", topic)) if v]
     if page_no > 1:
-        q.append(f"page={page_no}")
-    return "/?" + "&".join(q) if q else "/"
+        q.append(("page", page_no))
+    return "/?" + urllib.parse.urlencode(q) if q else "/"
 
 
-def pager_html(view, sort, page_no, n_pages):
+def topic_link(topic):
+    """트렌드·분석의 주제 이름 → 그 주제로 걸러진 글 목록. 목록도 같은 kn.normalize 결과로 되거른다."""
+    return f"<a class='r-title' href='{list_href(topic=topic)}'>{esc(topic)}</a>"
+
+
+def staff_link(name):
+    """담당자 이름 → 그 담당자 글 목록. 집계에서 만든 '(없음)'은 걸 수 없으니 글자만."""
+    if not name or name == "(없음)":
+        return esc(name or "-")
+    return f"<a class='r-title' href='{list_href(staff=name)}'>{esc(name)}</a>"
+
+
+def pager_html(view, sort, page_no, n_pages, cafe="", staff="", topic=""):
     """③ 쪽 이동 줄(목록 아래만). 한 쪽뿐이면 줄 자체가 없다.
     번호를 늘어놓지 않는다 — 이 화면의 훑기는 순서대로 넘기기다(사용자 확정).
     누를 수 없는 이동은 없애지 않고 흐리게 남긴다(쪽마다 단추 위치가 움직이면 연달아 누르기가 방해받음)."""
@@ -775,7 +906,7 @@ def pager_html(view, sort, page_no, n_pages):
     def item(label_on, label_off, target, enabled):
         if not enabled:      # 화살표·밑줄 없이 흐린 글자 — 흑백으로 봐도 링크가 아님이 보인다
             return f"<span class='off'>{label_off}</span>"
-        return f"<a href='{list_href(view, sort, target)}'>{label_on}</a>"
+        return f"<a href='{list_href(view, sort, target, cafe, staff, topic)}'>{label_on}</a>"
     prev_ok, next_ok = page_no > 1, page_no < n_pages
     return ("<div class='pager'>"
             + item("← 처음", "처음", 1, prev_ok)
@@ -903,7 +1034,7 @@ def render_analysis(conn, sort="views", min_age=False):
             avpd = f"{it['avg_vpd']:.1f}" if it["avg_vpd"] is not None else "-"
             t_rows.append(
                 "<div class='listrow static'>"
-                f"<div>{esc(it['topic'])}</div>"
+                f"<div>{topic_link(it['topic'])}</div>"
                 f"<div class='num'>{_comma(it['published'])}</div>"
                 f"<div class='num'>{it['extracted']}</div>"
                 f"<div class='num'>{_comma(round(it['avg_views']))}</div>"
@@ -913,7 +1044,8 @@ def render_analysis(conn, sort="views", min_age=False):
                 "묶어 봄 · 추출글 2건+ · 평균 조회수 높은 순</span></h2>"
                 "<p class='intro sub'>‘발행 글수’는 우리가 그 주제로 쓴 전체 글, ‘추출·조회 글수’는 "
                 "그중 조회수를 확보한 글입니다. <b>발행은 적은데 평균 조회수가 높은 주제</b>가 "
-                "‘더 써볼 후보’예요. (조회수는 참고 신호 — 자사 채널에서 재검증 필요)</p>"
+                "‘더 써볼 후보’예요. (조회수는 참고 신호 — 자사 채널에서 재검증 필요)<br>"
+                "주제 이름을 누르면 그 주제로 쓴 우리 글 목록이 열립니다.</p>"
                 f"{skew_warn}"
                 f"<div class='an5'><div class='tablewrap'>{t_head}{''.join(t_rows)}</div></div>")
     else:
@@ -964,10 +1096,11 @@ def render_analysis(conn, sort="views", min_age=False):
               "<div class='num'>평균 조회수</div></div>")
     s_rows = "".join(
         "<div class='listrow static'>"
-        f"<div>{esc(s)}</div><div class='num'>{n}</div>"
+        f"<div>{staff_link(s)}</div><div class='num'>{n}</div>"
         f"<div class='num'>{_comma(round(av))}</div></div>"
         for s, n, av in sstats)
     sec3 = ("<h2 class='sec'>담당자별 조회수<span class='secsub'>평균 조회수 높은 순</span></h2>"
+            "<p class='intro sub'>담당자 이름을 누르면 그 담당자가 쓴 글 목록이 열립니다.</p>"
             f"<div class='an3'><div class='tablewrap'>{s_head}{s_rows}</div></div>")
 
     # --- 섹션 4: 형식과 조회수의 관계(정직 섹션) ---
@@ -1057,7 +1190,9 @@ def render_trends(conn):
         "<p class='intro'>우리 카페 글을 주제로 묶어, <b>시기별로 발행 비중이 뜨거나 식는 "
         "주제</b>와 계절성·월내 분포를 봅니다.</p>"
         "<p class='intro sub'>‘비중’으로 봅니다 — 최근일수록 전체 발행량 자체가 늘어(2026 집중), "
-        "원시 건수는 대부분 증가하기 때문. 비중을 보면 ‘상대적으로’ 뜨는/식는 주제만 남습니다.</p>")
+        "원시 건수는 대부분 증가하기 때문. 비중을 보면 ‘상대적으로’ 뜨는/식는 주제만 남습니다.</p>"
+        "<p class='intro sub'>이 화면의 <b>주제 이름을 누르면 그 주제로 쓴 우리 글 목록</b>이 "
+        "열립니다. 돌아올 때는 브라우저 뒤로 가기를 쓰세요.</p>")
 
     # --- 월별 비중 히트맵 (분기 '시작 vs 최근' 기울기의 함정 대체) ---
     hm = trends.monthly_share_heatmap(recs, top_n=HEAT_TOP_N, months_back=HEAT_MONTHS,
@@ -1086,7 +1221,7 @@ def render_trends(conn):
             cells = "".join(hm_cell(sh) for sh in r["cells"])
             hm_rows.append(
                 f"<div class='hm-row' style='{gcols}'>"
-                f"<div class='hm-t'>{esc(r['topic'])}"
+                f"<div class='hm-t'>{topic_link(r['topic'])}"
                 f"<span class='hm-tot'>{_comma(r['total'])}</span></div>"
                 f"{cells}</div>")
         # 범례 — 색만으로 구분되지 않게 실제 몫(%)을 숫자로 함께
@@ -1120,7 +1255,7 @@ def render_trends(conn):
                   "<div class='num'>가장 많이 쓴 달</div><div class='num'>그 달 비중</div></div>")
         s_rows = "".join(
             "<div class='listrow static'>"
-            f"<div>{esc(it['topic'])}</div><div class='num'>{_comma(it['total'])}</div>"
+            f"<div>{topic_link(it['topic'])}</div><div class='num'>{_comma(it['total'])}</div>"
             f"<div class='num'>{it['peak_month']}월</div>"
             f"<div class='num'>{it['peak_pct']:.0f}%</div></div>"
             for it in seas)
@@ -1147,7 +1282,7 @@ def render_trends(conn):
                 "<div class='num'>총 글수</div></div>")
         rows = "".join(
             "<div class='listrow static'>"
-            f"<div>{esc(it['topic'])}</div>"
+            f"<div>{topic_link(it['topic'])}</div>"
             f"<div class='num'>{it['early_pct']:.0f}%</div>"
             f"<div class='num'>{it['mid_pct']:.0f}%</div>"
             f"<div class='num'>{it['late_pct']:.0f}%</div>"
@@ -1607,7 +1742,8 @@ def make_handler(db_path):
                 if u.path == "/":
                     self._send_html(render_list(
                         conn, qs.get("view", ["all"])[0], qs.get("sort", ["recent"])[0],
-                        qs.get("page", ["1"])[0]))
+                        qs.get("page", ["1"])[0], qs.get("cafe", [""])[0],
+                        qs.get("staff", [""])[0], qs.get("topic", [""])[0]))
                 elif u.path == "/analysis":
                     self._send_html(render_analysis(
                         conn, qs.get("sort", ["views"])[0],
