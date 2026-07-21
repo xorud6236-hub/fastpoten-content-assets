@@ -15,6 +15,7 @@
 푸시 전에 돌려볼 것. 이력에서 지우려면 깃 이력 재작성이 필요하다(별건).
 """
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -117,10 +118,34 @@ def main():
     else:
         print("   없음")
 
+    # ③ AI 열쇠 — 실명과 같은 종류의 사고(비밀이 저장소에 실림)를 막는다.
+    #    진짜 열쇠는 환경변수에만 있어야 하고, 어떤 파일에도 적히면 안 된다.
+    #    테스트용 가짜는 짧아서 길이로 걸러진다(진짜는 100자 안팎).
+    print("\n③ AI 열쇠가 파일에 적혔나")
+    real_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    key_hits = []
+    for line in run(["grep", "-n", "-I", "sk-ant-", "--", "."]).splitlines():
+        # 형식: 경로:줄번호:내용 — 내용에서 열쇠 모양만 뽑아 길이로 판정(값은 절대 안 찍는다)
+        m = re.search(r"sk-ant-[A-Za-z0-9_\-]+", line)
+        if not m:
+            continue
+        found = m.group(0)
+        where = ":".join(line.split(":", 2)[:2])
+        if real_key and found == real_key:
+            key_hits.append((where, "진짜 열쇠"))
+        elif len(found) >= 60:
+            key_hits.append((where, f"열쇠로 보이는 값 {len(found)}자"))
+    if key_hits:
+        for where, what in key_hits:
+            print(f"   ★ {where} — {what}")
+        print("   → 지금 폐기하고 새로 발급할 것. 환경변수(setx)로만 두어야 한다.")
+    else:
+        print("   없음 (짧은 테스트용 가짜 값은 검사 대상이 아님)")
+
     print("\n" + "=" * 58)
-    print(f"판정: 커밋된 현재 파일 {len(cur)}명 · 이력 {len(hist)}명")
+    print(f"판정: 커밋된 현재 파일 {len(cur)}명 · 이력 {len(hist)}명 · 열쇠 {len(key_hits)}건")
     print("=" * 58)
-    return 1 if cur else 0
+    return 1 if (cur or key_hits) else 0
 
 
 if __name__ == "__main__":
