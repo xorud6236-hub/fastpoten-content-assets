@@ -222,23 +222,26 @@ def rel_label(r):
 # ---------------------------------------------------------------------------
 PAGE_CSS = """
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: var(--font); color: var(--ink); background: #f4f6fa;
+body { font-family: var(--font); color: var(--ink); background: var(--bg);
        font-size: 16px; line-height: 1.6; }
 a { color: var(--brand); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .topbar { position: sticky; top: 0; z-index: 10;
-          background: var(--brand); color: #fff;
+          background: var(--brand); color: var(--on-brand);
           display: flex; align-items: center; gap: 16px;
           padding: 16px 24px; }
-.topbar a { color: #fff; }
+.topbar a { color: var(--on-brand); }
 .topbar .t-title { flex: 1; font-size: 20px; font-weight: 700;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
-.meta { color: var(--muted); font-size: 13px; margin: 8px 0 24px; }
+/* 본문 폭 — 7개 화면 공통 한 값(화면을 오가도 왼쪽 끝이 흔들리지 않게). 하단 도장 바도 같은 값. */
+.wrap { max-width: 1320px; margin: 0 auto; padding: 24px; }
+.meta { color: var(--muted); font-size: 13px; margin: 8px 0 16px; }
 .meta b { color: var(--ink); font-weight: 700; }
 h1.doc { font-size: 24px; font-weight: 800; line-height: 1.3; }
 h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
          margin: 0 0 16px; }
+/* 표 묶음 머리(팩트 목록의 공통/개별) — 앞 표와 붙지 않게 */
+h2.sec.grp { margin-top: 24px; }
 /* 상태 배지(pill) — 색만이 아니라 글자로도 구분.
    white-space: nowrap — '성공(자동추출)'처럼 긴 상태가 좁은 칸에서 두 줄로 접히지 않게(사용 피드백). */
 .badge { display: inline-block; border-radius: 999px; padding: 4px 12px;
@@ -247,12 +250,12 @@ h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
 .badge.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
 .badge.danger { color: var(--danger); background: var(--danger-bg); border-color: var(--danger); }
 /* '아직 안 봄'(미확인) — 잘못이 아니므로 경고색을 쓰지 않는다. .chip dim과 같은 회색 값. */
-.badge.dim { color: var(--muted); background: #eef1f5; border-color: var(--line); }
+.badge.dim { color: var(--muted); background: var(--fill); border-color: var(--line); }
 /* 태그 chip — 문단 역할·이미지 분류 */
 .chip { display: inline-block; border-radius: 6px; padding: 2px 8px;
         font-size: 13px; font-weight: 700; color: var(--accent);
         background: #eaf7f5; margin-right: 6px; }
-.chip.dim { color: var(--muted); background: #eef1f5; }
+.chip.dim { color: var(--muted); background: var(--fill); }
 .chip.mark { color: var(--note-ink); background: var(--note-bg); }
 .needcheck { color: var(--muted); font-size: 13px; margin-left: 4px; }
 /* 2단 배치 — 좁아지면 위아래로 쌓임 */
@@ -287,8 +290,12 @@ h2.sec { font-size: 20px; font-weight: 700; color: var(--brand);
 mark.masked { background: var(--note-bg); color: var(--note-ink);
               border-radius: 4px; padding: 0 3px; font-weight: 700; }
 .panel { background: var(--paper); border: 1px solid var(--line);
-         border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+         border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
 .panel h2.sec { font-size: 16px; margin-bottom: 12px; }
+/* 칸 제목 줄 — 왼쪽 칸 이름(+고침 칩), 오른쪽 [고치기]. 좁아지면 버튼이 아래로 접힌다.
+   .cmp-col > h2.sec가 이미 쓰는 '제목 한 줄' 관례를 따르는 변형이다(새 종류 아님). */
+h2.sec.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+             justify-content: space-between; }
 .masklist { list-style: none; }
 .masklist li { padding: 6px 0; border-bottom: 1px solid var(--line);
                display: flex; justify-content: space-between; }
@@ -300,26 +307,34 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .imgcard .badges > * { margin: 0 6px 6px 0; }
 .thumb { max-width: 100%; border-radius: 6px; display: block; margin-top: 8px; }
 .imgnote { color: var(--muted); font-size: 12px; margin-top: 6px; }
-.placeholder { background: #eef1f5; color: var(--muted); border-radius: 6px;
+.placeholder { background: var(--fill); color: var(--muted); border-radius: 6px;
                padding: 24px 12px; text-align: center; font-size: 13px; margin-top: 8px; }
-/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 9컬럼(제목·카페·담당자·상태·가림·문단·이미지·조회수·작성일)
-   '가림' 칸은 '다시 세기 필요'가 들어갈 만큼, '상태' 칸은 '실패-접근불가(기타)' 배지가 한 줄로
-   들어갈 만큼 넓힌다(그만큼 제목을 줄임 — 제목은 말줄임 처리라 안전). */
+/* 목록 표 — 줄 전체가 클릭 영역(진짜 링크). 기본 비율은 분석 표들이 an1~an13으로 각자 덮어쓴다.
+   ★ 표의 지면은 사람이 읽어서 하나씩 구별하는 열(제목·이름)에 준다 — 숫자·날짜·상태는 모양이
+   정해져 있어 흘깃 보면 읽히므로 실측 최대 길이 + 여백만 준다(헌장 디자인 규칙). */
 .listhead, .listrow { display: grid;
-    grid-template-columns: 2fr 1fr 0.8fr 1.7fr 1.2fr 0.5fr 0.55fr 0.8fr 1fr; gap: 12px;
-    padding: 12px 16px; align-items: center; }
-/* 글 목록도 분석 표와 같은 규칙 — 최소 폭 아래로는 짜부러지지 않고 가로로 밀린다(.tablewrap) */
-.postlist .listhead, .postlist .listrow { min-width: 1040px; }
+    grid-template-columns: 2fr 1fr 0.8fr 1.7fr 1.2fr 0.5fr 0.55fr 0.8fr 1fr; gap: 8px;
+    padding: 8px 14px; align-items: center; line-height: 1.4; min-height: 40px; }
+/* 글 목록 9컬럼 — 제목만 남는 폭을 전부 가져가고(minmax(0,1fr)) 나머지는 실측 최대 길이에 맞춘 고정 폭.
+   실측(본문 있는 글 3,776건): 제목 95%가 39자 이내(최장 55자 — 그 위는 …로 줄임) ·
+   카페 최장 5자 · 담당자 최장 5자 · 상태 '성공(자동추출)' 8자 · 가림은 '다시 세기 필요'가 들어갈 만큼 ·
+   작성일 YYYY-MM-DD 10자. 1320px 화면에서 제목 칸은 약 600px = 43자.
+   상태 열은 지우지 않는다(사용자 확정) — 대신 좁혀도 되는 열을 줄여 제목에 몰아준다. */
+.postlist .listhead, .postlist .listrow { min-width: 1100px; font-size: 14px;
+    grid-template-columns: minmax(0, 1fr) 74px 74px 120px 88px 40px 46px 50px 80px; }
 .listhead { color: var(--muted); font-size: 13px; font-weight: 700;
             border-bottom: 2px solid var(--line); }
 .listrow { background: var(--paper); border-bottom: 1px solid var(--line);
            color: var(--ink); }
-.listrow:hover { background: #eef4fb; text-decoration: none; }
+.listrow:hover { background: var(--hover); text-decoration: none; }
 .listrow .r-title { font-weight: 700; color: var(--brand); }
 /* 표의 칸은 접히지 않는다 — 넘치면 …로 줄이고, 표 전체는 .tablewrap으로 가로 스크롤.
    (글 목록·분석·트렌드·팩트 표 공통. 칸마다 두 줄로 접혀 줄 높이가 들쭉날쭉하던 문제) */
 .listhead > div, .listrow > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .num-dim { color: var(--muted); }
+/* 배경 정보 칸(카페·담당자·작성일) — 한 단계 낮춰 제목이 먼저 읽히게. 숫자 칸은 낮추지 않는다
+   (이름을 .dim으로 두지 않는다 — 줄 안의 .badge.dim·.chip.dim과 헷갈린다) */
+.listrow .soft { color: var(--muted); }
 .num { text-align: right; }
 /* '가림' 칸에 숫자를 못 쓰는 줄(규칙이 바뀌었거나 아직 안 셈) — 회색 작은 글자.
    경고색을 쓰지 않는 이유: 규칙을 한 번 손보면 온 줄이 이 상태가 되는데 전부 경고색이면 경고가 아니게 된다.
@@ -346,7 +361,7 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
          min-height: 44px; border-radius: 6px; }
 .filters select { padding: 0 8px; border: 1px solid var(--line); background: var(--paper);
          color: var(--ink); max-width: 220px; }
-.filters button { font-weight: 700; color: #fff; background: var(--brand);
+.filters button { font-weight: 700; color: var(--on-brand); background: var(--brand);
          border: 1px solid var(--brand); padding: 0 20px; cursor: pointer; }
 /* 걸러 놓은 조건 — 무엇 때문에 목록이 줄었는지 글자로 알린다(색만으로 구분하지 않음).
    ✕는 이 화면의 주 동작이라 최소 44×44. 조건이 많으면 두 줄로 접혀 내려간다. */
@@ -387,9 +402,11 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 .an9 .listhead, .an9 .listrow { grid-template-columns: 1.6fr 0.5fr 1.6fr 0.5fr 1.4fr;
             min-width: 700px; }
 .an10 .listhead, .an10 .listrow { grid-template-columns: 3fr 1fr; min-width: 360px; }
-/* 팩트 룰북 목록 — 항목명·종류·카테고리·상태·고친 칸·확인 날짜 */
-.an11 .listhead, .an11 .listrow { grid-template-columns: 2.4fr 0.7fr 1.2fr 1fr 0.8fr 1fr;
-            min-width: 720px; }
+/* 팩트 룰북 목록 — 항목명·카테고리·상태·고친 칸·확인 날짜.
+   '종류'(공통/개별) 열은 없앴다 — 묶음 머리가 그 정보를 말하고, 51줄에 같은 글자를 반복하지 않는다. */
+.an11 .listhead, .an11 .listrow {
+            grid-template-columns: minmax(0, 1fr) 120px 104px 70px 84px;
+            min-width: 720px; font-size: 14px; }
 /* 분석(재료 찾기) 표 — 주제별 우리 글(an12) / 팩트 항목 맞춰보기·담당자별(an13, 둘 다 4열) */
 .an12 .listhead, .an12 .listrow { grid-template-columns: 2.4fr 0.8fr 1.1fr 1fr 1fr;
             min-width: 640px; }
@@ -446,15 +463,25 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
         border-radius: 6px; font-family: var(--font); font-size: 15px; font-weight: 700;
         cursor: pointer; border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
 .fedit .btn:hover { text-decoration: none; }
-.fedit .btn.go { background: var(--brand); border-color: var(--brand); color: #fff; }
+.fedit .btn.go { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
 /* 지금 상태인 도장은 눌린 모양(색만이 아니라 테두리 굵기로도 구분) */
 .fedit .btn.on { border-color: var(--brand); border-width: 2px; font-weight: 800; }
 /* 하단 고정 도장 바 — 칸이 7~8개라 상세가 길다. 다 읽고 위로 되돌아가는 왕복을 없앤다 */
 .stampbar { position: sticky; bottom: 0; z-index: 9; background: var(--paper);
         border-top: 1px solid var(--line); padding: 12px 24px; }
-.stampbar form { max-width: 1100px; margin: 0 auto;
+.stampbar form { max-width: 1320px; margin: 0 auto;
         display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.stampbar details { flex: 1 1 100%; }
+/* 검수 메모는 도장 버튼과 같은 줄에 접어 둔다(51건 중 몇 건만 쓴다). 펼치면 바가 위로 자란다. */
+.stampbar details { flex: 1 1 240px; min-width: 200px; }
+/* 마지막 칸이 도장 바에 덮이지 않게 본문 끝에 바 높이만큼 빈 자리 */
+.stampspace { height: 96px; }
+/* 긴 칸의 뒷부분 접기 — 브라우저 기본 details. 앞 8줄은 언제나 보인다(§2-4) */
+/* 접기 요약 두 종류(뒷줄 더 보기 · 엑셀 원본 보기)는 같은 모양.
+   display:flex가 브라우저 기본 삼각형을 없앤다 — 문구 앞의 ▸ 하나만 남기려는 것.
+   (2026-07-21 실물 확인: 기본 삼각형과 ▸가 겹쳐 "▶ ▸"로 두 개 보였다) */
+.morelines > summary, .origin > summary {
+        display: flex; align-items: center; min-height: 44px; cursor: pointer;
+        font-weight: 700; color: var(--brand); }
 .stampbar summary { min-height: 44px; display: flex; align-items: center;
         font-weight: 700; color: var(--brand); cursor: pointer; }
 /* 방금 한 행동의 결과 한 줄(.honest는 '항상 떠 있는 정직 경고'라 의미·크기가 다르다) */
@@ -927,14 +954,14 @@ def render_list(conn, view="all", sort="recent", page_no=1, cafe="", staff="", t
         body_rows.append(
             f"<a class='listrow' href='/post?id={r['post_id']}'>"
             f"<div class='r-title'>{esc(r['title'] or '(제목 없음)')}</div>"
-            f"<div>{esc(r['cafe_name'] or '-')}</div>"
-            f"<div>{esc(r['staff_name'] or '-')}</div>"
+            f"<div class='soft'>{esc(r['cafe_name'] or '-')}</div>"
+            f"<div class='soft'>{esc(r['staff_name'] or '-')}</div>"
             f"<div><span class='badge {'ok' if ok else 'danger'}'>"
             f"{esc(r['extraction_status'] or '상태 미상')}</span></div>"
             f"{mask_cell}"
             f"<div>{r['para_n']}</div><div>{r['img_n']}</div>"
             f"{view_cell}"
-            f"<div>{esc(r['publish_date'] or '-')}</div></a>")
+            f"<div class='soft'>{esc(r['publish_date'] or '-')}</div></a>")
 
     body = (f"<div class='wrap'>{filters}{pick}{cond_html}{notice}{range_html}"
             f"<div class='postlist'><div class='tablewrap'>{head}{''.join(body_rows)}</div></div>"
@@ -1977,34 +2004,59 @@ def render_facts(conn, view="all", kind="all"):
 
     def on(cond):
         return " class='on'" if cond else ""
+
+    def pick(v, k):
+        return [r for r in rows
+                if (v == "all" or r["review_status"] == FACT_VIEWS[v])
+                and (k == "all" or r["fact_kind"] == FACT_KINDS[k])]
+
+    def link(v, k, label, cur):
+        # 건수는 '그걸 누르면 나오는 수' — 지금 걸린 다른 조건까지 함께 센다(숫자와 화면이 어긋나지 않게)
+        return f"<a href='{href(v, k)}'{on(cur)}>{label}({len(pick(v, k))})</a>"
     filters = ("<div class='filters'>보기: "
-               f"<a href='{href('all', kind)}'{on(view == 'all')}>전체</a> · "
-               f"<a href='{href('unreviewed', kind)}'{on(view == 'unreviewed')}>미확인만</a> · "
-               f"<a href='{href('reviewed', kind)}'{on(view == 'reviewed')}>확인함</a> · "
-               f"<a href='{href('hold', kind)}'{on(view == 'hold')}>보류</a>"
-               "<br>종류: "
-               f"<a href='{href(view, 'all')}'{on(kind == 'all')}>전체</a> · "
-               f"<a href='{href(view, 'common')}'{on(kind == 'common')}>공통</a> · "
-               f"<a href='{href(view, 'individual')}'{on(kind == 'individual')}>개별</a></div>")
+               + " · ".join((link("all", kind, "전체", view == "all"),
+                             link("unreviewed", kind, "미확인만", view == "unreviewed"),
+                             link("reviewed", kind, "확인함", view == "reviewed"),
+                             link("hold", kind, "보류", view == "hold")))
+               + "<br>종류: "
+               + " · ".join((link(view, "all", "전체", kind == "all"),
+                             link(view, "common", "공통", kind == "common"),
+                             link(view, "individual", "개별", kind == "individual")))
+               + "</div>")
 
-    shown = [r for r in rows
-             if (view == "all" or r["review_status"] == FACT_VIEWS[view])
-             and (kind == "all" or r["fact_kind"] == FACT_KINDS[kind])]
+    shown = pick(view, kind)
 
-    head = ("<div class='listhead'><div>항목명</div><div>종류</div><div>카테고리</div>"
+    head = ("<div class='listhead'><div>항목명</div><div>카테고리</div>"
             "<div>상태</div><div class='num'>고친 칸</div><div>확인 날짜</div></div>")
+
+    def row_html(r):
+        # 카테고리가 항목명과 똑같은 줄(공통 팩트)은 '–'로 둔다 — 같은 글자를 두 번 읽히지 않게.
+        cat = r["category"] or ""
+        cat_cell = (f"<div>{esc(cat)}</div>" if cat and cat != r["item_name"]
+                    else "<div class='num-dim'>–</div>")
+        # 확인함은 배지 말고 항목명 앞 ✓로도 보인다(색만으로 구분하지 않는다)
+        tick = "✓ " if r["review_status"] == "확인함" else ""
+        return (f"<a class='listrow' href='/fact?id={r['fact_id']}'>"
+                f"<div class='r-title'>{tick}{esc(r['item_name'])}</div>{cat_cell}"
+                f"<div>{fact_badge(r['review_status'])}</div>"
+                + (f"<div class='num'>{r['edited_n']}</div>" if r["edited_n"]
+                   else "<div class='num num-dim'>–</div>")
+                + f"<div>{esc((r['reviewed_at'] or '')[5:10] or '–')}</div></a>")
+
     if shown:
-        body_rows = "".join(
-            f"<a class='listrow' href='/fact?id={r['fact_id']}'>"
-            f"<div class='r-title'>{esc(r['item_name'])}</div>"
-            f"<div>{esc(r['fact_kind'])}</div>"
-            f"<div>{esc(r['category'] or '-')}</div>"
-            f"<div>{fact_badge(r['review_status'])}</div>"
-            + (f"<div class='num'>{r['edited_n']}</div>" if r["edited_n"]
-               else "<div class='num num-dim'>–</div>")
-            + f"<div>{esc((r['reviewed_at'] or '')[5:10] or '–')}</div></a>"
-            for r in shown)
-        table = f"<div class='an11'><div class='tablewrap'>{head}{body_rows}</div></div>"
+        # 묶음 머리가 '종류' 열을 대신한다(공통 먼저 → 개별. 0건인 묶음은 머리도 그리지 않는다)
+        parts = []
+        for k in ("공통", "개별"):
+            grp = [r for r in shown if r["fact_kind"] == k]
+            if not grp:
+                continue
+            parts.append(f"<h2 class='sec grp'>{k} 팩트 {len(grp)}건</h2>"
+                         "<div class='an11'><div class='tablewrap'>"
+                         + head + "".join(row_html(r) for r in grp) + "</div></div>")
+            if k == "공통":
+                parts.append("<p class='intro sub'>공통 팩트는 항목명이 곧 카테고리라 "
+                             "‘–’로 둡니다.</p>")
+        table = "".join(parts)
     else:
         table = ("<div class='state'>이 보기에 해당하는 항목이 없습니다. "
                  "위에서 ‘전체’를 눌러 보세요.</div>")
@@ -2045,6 +2097,25 @@ def _fact_form(fact_id, action, field=None, inner=""):
 def _fact_undo_btn(fact_id, field):
     return _fact_form(fact_id, "undo", field,
                       "<button class='btn' type='submit'>되돌리기</button>")
+
+
+FOLD_MIN_LINES = 12    # 이 줄 수를 넘는 칸만 접는다(모순이 나는 요건·주의메모·FAQ는 짧아 안 접힌다)
+FOLD_HEAD_LINES = 8    # 접을 때도 앞부분은 언제나 이만큼 보인다
+
+
+def _fact_value_html(val):
+    """팩트 칸 값 — 아주 긴 칸만 앞 8줄을 펴고 나머지를 브라우저 기본 접기에 넣는다.
+
+    // simplified: 줄 수는 값에 든 줄바꿈으로만 센다(화면 폭에 따라 접히는 줄은 셀 수 없음).
+    """
+    lines = (val or "").split("\n")
+    if len(lines) <= FOLD_MIN_LINES:
+        return f"<div class='ptext'>{esc(val)}</div>"
+    head, rest = lines[:FOLD_HEAD_LINES], lines[FOLD_HEAD_LINES:]
+    return (f"<div class='ptext'>{esc(chr(10).join(head))}</div>"
+            f"<details class='morelines'><summary>▸ 나머지 {len(rest)}줄 더 보기 "
+            f"(이 칸은 모두 {len(lines)}줄입니다)</summary>"
+            f"<div class='ptext'>{esc(chr(10).join(rest))}</div></details>")
 
 
 def _fact_stampbar(row, draft_note=None):
@@ -2123,6 +2194,7 @@ def render_fact(conn, id_raw, edit=None, done=None, f=None, s=None,
         origin = origins.get((fact_id, col))
         changed = origin is not None and (row[col] or "") != (origin or "")
         chip = " <span class='chip mark'>고침</span>" if changed else ""
+        head_btn = ""    # [고치기]는 칸 제목과 같은 줄 — 긴 칸에서 버튼까지 스크롤하지 않게
         if col == edit:
             # 이 칸만 입력 상자로. 저장 실패면 고치던 내용(draft)을 그대로 되돌려 넣는다.
             val = draft if draft is not None else (row[col] or "")
@@ -2137,16 +2209,23 @@ def render_fact(conn, id_raw, edit=None, done=None, f=None, s=None,
                 f"<a class='btn' href='/fact?id={fact_id}'>취소</a>")
         else:
             val = row[col]
-            inner = (f"<div class='ptext'>{esc(val)}</div>" if val and val.strip()
-                     else "<p class='note-empty'>이 칸은 비어 있습니다.</p>")
-            inner += ("<p class='fedit' style='margin-top:12px'>"
-                      f"<a class='btn' href='/fact?id={fact_id}&edit={col}'>고치기</a></p>")
+            if not (val and val.strip()):        # 빈 칸은 접기 대상이 아니다
+                inner = "<p class='note-empty'>이 칸은 비어 있습니다.</p>"
+            else:
+                # 고친 칸도 똑같이 접는다. 처음엔 "손댄 칸은 다시 볼 이유가 있으니 펴 두자"로
+                # 만들었는데 거꾸로였다 — 검수하며 고칠수록 펴진 칸이 늘어 51건을 훑을수록
+                # 화면이 길어진다(실물 확인 2026-07-21: 26줄짜리 '필요 학점'이 안 접혔다).
+                # 손댔다는 사실은 제목 줄의 [고침] 칩이 이미 알리고, 펴 보려면 한 번 누르면 된다.
+                inner = _fact_value_html(val)
+            head_btn = ("<span class='fedit'>"
+                        f"<a class='btn' href='/fact?id={fact_id}&edit={col}'>고치기</a></span>")
             if changed:   # 엑셀 원본에 닿는 길 — 고친 칸에만, 접어서(훑는 손가락에 안 닿게)
-                inner += ("<details><summary>▸ 엑셀에서 온 원래 값 보기</summary>"
+                inner += ("<details class='origin'><summary>▸ 엑셀에서 온 원래 값 보기</summary>"
                           f"<div class='ptext placeholder' style='text-align:left'>"
                           f"{esc(origin or '(비어 있었음)')}</div>"
                           f"{_fact_undo_btn(fact_id, col)}</details>")
-        panels.append(f"<div class='panel'><h2 class='sec'>{esc(label)}{chip}</h2>{inner}</div>")
+        panels.append(f"<div class='panel'><h2 class='sec row'><span>{esc(label)}{chip}</span>"
+                      f"{head_btn}</h2>{inner}</div>")
 
     if edits:
         def edit_label(name):   # 값 칸이면 칸 이름, 상태·메모면 그 이름
@@ -2172,13 +2251,13 @@ def render_fact(conn, id_raw, edit=None, done=None, f=None, s=None,
         flash = (f"<div class='flash'>✓ ‘{esc(s)}’(으)로 바꿨습니다."
                  f"{_fact_undo_btn(fact_id, FIELD_STATUS)}</div>")
 
+    # 큰 제목(h1)은 두지 않는다 — 항목명은 붙어 있는 상단 띠에 이미 크게 있어 스크롤 내내 보인다.
     body = ("<div class='wrap'>"
-            f"{flash}<h1 class='doc'>{esc(row['item_name'])}</h1>"
-            f"<div class='meta'>{' · '.join(meta_bits)}</div>"
+            f"{flash}<div class='meta'>{' · '.join(meta_bits)}</div>"
             "<p class='intro'>이 항목의 모든 칸을 아래에 한 번에 폈습니다. "
             "칸끼리 말이 어긋나는 곳을 찾는 게 이 화면의 목적입니다.</p>"
             "<p class='intro sub'>(예: 요건은 160시간인데 FAQ는 120시간이라고 적힌 경우)</p>"
-            f"{''.join(panels)}{history}</div>"
+            f"{''.join(panels)}{history}<div class='stampspace'></div></div>"
             + _fact_stampbar(row, draft_note))
     return page(f"팩트 — {row['item_name']}", topbar, body)
 

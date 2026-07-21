@@ -892,9 +892,13 @@ class TestFactsScreens(unittest.TestCase):
         self.assertNotIn("badge danger", h)
 
     def test_list_columns_and_edited_dash(self):
+        # 2026-07-21 지면 배분: '종류' 열은 없앴다 — 묶음 머리(공통/개별)가 그 정보를 말한다
         h = viewer.render_facts(self.conn)
-        for col in ("항목명", "종류", "카테고리", "상태", "고친 칸", "확인 날짜"):
+        for col in ("항목명", "카테고리", "상태", "고친 칸", "확인 날짜"):
             self.assertIn(f">{col}</div>", h)
+        self.assertNotIn(">종류</div>", h)
+        self.assertIn("공통 팩트 16건", h)
+        self.assertIn("개별 팩트 35건", h)
         self.assertIn("<div class='num num-dim'>–</div>", h)   # 고친 칸 0 → 회색 –
 
     def test_list_order_is_common_first(self):
@@ -1450,6 +1454,212 @@ class TestTrendsEmptyState(unittest.TestCase):
         import trends
         self.assertEqual(trends._ymd("2027-03-15"), (2027, 3, 15))  # 2027 시한폭탄 방지
         self.assertIsNone(trends._ymd("2323-01-01"))                # 명백한 오타는 계속 배제
+
+
+class TestDesignUpgrade(unittest.TestCase):
+    """디자인 업그레이드 1·2차(2026-07-21) — 지면 배분·긴 칸 접기·폭 통일이 살아 있는지.
+
+    ★ 여기서 재는 것은 '보기 좋은가'가 아니라 되돌아가면 곧바로 깨지는 사실들이다:
+    긴 칸만 접힌다 / 제목 열이 가장 넓다 / 상태 열이 남아 있다 / 폭이 한 값이다 / 색이 안 늘었다.
+    """
+
+    WRAP = 1320          # 본문 폭(모든 화면 공통)
+    WRAP_PAD = 24        # .wrap 좌우 여백
+    ROW_PAD = 14         # 표 한 줄 좌우 여백
+    ROW_GAP = 8          # 표 칸 사이 간격
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.dbp = os.path.join(cls.tmp, "design.sqlite3")
+        load_rulebook.run(db_path=cls.dbp)
+        cls.conn = db.get_connection(cls.dbp)
+        db.init_db(cls.conn)
+        raw = os.path.join(cls.tmp, "corpus", "body_raw.txt")
+        clean = os.path.join(cls.tmp, "corpus", "body_clean.txt")
+        _write(raw, "원문 한 줄")
+        _write(clean, "원문 한 줄")
+        cls.conn.execute(
+            "INSERT INTO posts (post_id, title, keyword, cafe_name, staff_name, publish_date, "
+            "extraction_status, body_raw_path, body_clean_path, mask_count) "
+            "VALUES (1,'긴 제목을 가진 글','플래너 자격증','공준모','담당가','2026-07-02',"
+            "'성공(자동추출)',?,?,0)", (raw, clean))
+        # load_rulebook이 실제 팩트 51건을 함께 넣으므로(2차 적재가 같은 실행) 비우고 시작한다.
+        # 가림 패턴은 그대로 두고 팩트만 이 시험용 2건으로 바꾼다 — 묶음 머리 건수를 재려면 필요.
+        cls.conn.execute("DELETE FROM rulebook_facts")
+        # 팩트 2건 — 하나는 30줄짜리 긴 칸, 하나는 짧은 칸만(접기 기준을 양쪽에서 잰다)
+        cls.long_val = "\n".join(f"{i}과목" for i in range(1, 31))
+        cls.conn.execute(
+            "INSERT INTO rulebook_facts (fact_id, fact_kind, category, item_name, requirement, "
+            "credits, source_version) VALUES (1,'공통','사회복지','사회복지사2급',"
+            "'고졸: 학점은행제\n실습 160시간',?,'테스트')", (cls.long_val,))
+        cls.conn.execute(
+            "INSERT INTO rulebook_facts (fact_id, fact_kind, category, item_name, core_fact, "
+            "source_version) VALUES (2,'개별','보육','보육교사2급','짧은 값 한 줄','테스트')")
+        cls.conn.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    # ---- 도우미: PAGE_CSS에서 그리드 열 폭 읽기 ----
+    @staticmethod
+    def _cols(selector):
+        block = viewer.PAGE_CSS.split(selector, 1)[1].split("}", 1)[0]
+        spec = block.split("grid-template-columns:", 1)[1].split(";", 1)[0]
+        return [c.strip() for c in spec.replace("minmax(0, 1fr)", "FLEX").split()]
+
+    # ---- ① 긴 칸만 접힌다 ----
+    def test_long_field_folds_and_short_field_does_not(self):
+        # ★ 화면 위쪽 <style>에는 CSS와 그 주석이 들어 있어, 전체 HTML에서 한국어 낱말을
+        #   세면 주석에 걸린다(2026-07-21에 세 번 밟았다). 화면 본문만 놓고 센다.
+        h = viewer.render_fact(self.conn, 1).split("<body>", 1)[1]
+        self.assertIn("나머지 22줄 더 보기 (이 칸은 모두 30줄입니다)", h)   # 30줄 → 앞 8줄만
+        self.assertIn("8과목", h)                       # 앞부분은 접기 밖에 그대로 있다
+        self.assertEqual(h.count("class='morelines'"), 1)   # 접힌 칸은 그 한 칸뿐
+        # 모순이 나는 짧은 칸(요건 2줄)은 접히지 않는다 — 접기가 짧은 칸까지 먹으면 실패
+        self.assertIn("실습 160시간", h)
+        # '나머지'는 화면 위쪽 <style>의 주석에도 들어 있어 전체에서 세면 헛짚는다.
+        # 접힌 칸이 하나뿐인 것은 위의 morelines 개수로 이미 확인했으므로, 여기서는
+        # 접기 요약 문구 자체를 센다(2026-07-21에 실제로 이 함정을 밟았다).
+        self.assertEqual(h.count("줄 더 보기"), 1)
+        # 12줄 이하는 통째로, 13줄이면 앞 8줄만 (접기 경계값 자체검증)
+        self.assertNotIn("morelines", viewer._fact_value_html("\n".join("가" * 12)))
+        self.assertIn("나머지 5줄 더 보기 (이 칸은 모두 13줄입니다)",
+                      viewer._fact_value_html("\n".join("가" * 13)))
+        # 편집 중인 칸은 절대 접지 않는다(고칠 땐 전부 보여야 한다).
+        # 클래스 이름은 화면 위쪽 <style>에 항상 들어 있으므로 <body> 안에서만 센다.
+        edited_body = viewer.render_fact(self.conn, 1, edit="credits").split("<body>", 1)[1]
+        self.assertNotIn("morelines", edited_body)
+        self.assertIn("30과목", edited_body)   # 고치는 상자에는 30줄이 전부 들어 있다
+
+    def test_edited_long_field_still_folds(self):
+        """고친 칸도 접힌다 — 안 접으면 검수하며 고칠수록 화면이 길어져 51건 훑기가 무너진다.
+
+        2026-07-21 실물 확인에서 잡힌 회귀(고친 26줄짜리 칸이 통째로 펴져 있었다).
+        """
+        self.conn.execute(
+            "INSERT INTO rulebook_fact_edits (fact_id, field_name, old_value, new_value) "
+            "VALUES (1, 'credits', '짧았던 원래 값', ?)", (self.long_val,))
+        self.conn.commit()
+        try:
+            body = viewer.render_fact(self.conn, 1).split("<body>", 1)[1]
+            self.assertIn("고침", body)                  # 손댔다는 표시는 제목 줄에 그대로
+            self.assertIn("엑셀에서 온 원래 값 보기", body)  # 원본에 닿는 길도 그대로
+            self.assertIn("class='morelines'", body)     # ★ 그러면서도 접힌다
+        finally:
+            self.conn.execute("DELETE FROM rulebook_fact_edits WHERE fact_id=1")
+            self.conn.commit()
+
+    def test_edit_button_sits_on_the_field_title_row(self):
+        # [고치기]가 칸 아래가 아니라 제목 줄에 있다(긴 칸에서 버튼까지 스크롤하지 않게)
+        h = viewer.render_fact(self.conn, 1)
+        head = h.split("<h2 class='sec row'>", 1)[1].split("</h2>", 1)[0]
+        self.assertIn("고치기", head)
+        self.assertIn("응시/취득 요건", head)
+        # 제목이 상단 띠와 본문에 두 번 나오지 않는다(큰 제목 삭제)
+        self.assertNotIn("<h1 class='doc'>", h)
+        self.assertIn("<span class='t-title'>사회복지사2급</span>", h)
+        self.assertIn("class='stampspace'", h)      # 마지막 칸이 도장 바에 가리지 않게 빈 자리
+
+    # ---- ② 글 목록: 제목 열이 어느 열보다 넓다 ----
+    def test_post_list_title_column_is_the_widest(self):
+        cols = self._cols(".postlist .listhead, .postlist .listrow {")
+        self.assertEqual(len(cols), 9)
+        self.assertEqual(cols[0], "FLEX")                    # 제목이 남는 폭을 전부 가져간다
+        fixed = [int(c.rstrip("px")) for c in cols[1:]]
+        # 1320px 화면에서 제목에 실제로 남는 폭 = 안쪽 폭 − 고정 열 − 칸 사이 간격
+        inner = self.WRAP - 2 * self.WRAP_PAD - 2 * self.ROW_PAD
+        title_px = inner - sum(fixed) - self.ROW_GAP * (len(cols) - 1)
+        self.assertGreater(title_px, max(fixed))
+        # 실측 제목 길이 95%가 39자 — 14px 글자로 39자(546px)가 잘리지 않아야 한다
+        self.assertGreaterEqual(title_px, 39 * 14)
+
+    # ---- ③ 상태 열은 사라지지 않았다(사용자 확정 — 숨기지 않는다) ----
+    def test_post_list_keeps_the_status_column(self):
+        h = viewer.render_list(self.conn)
+        self.assertIn(">상태</div>", h)
+        self.assertIn("성공(자동추출)", h)
+        for col in ("제목", "카페", "담당자", "가림", "문단", "이미지", "조회수", "작성일"):
+            self.assertIn(f">{col}</div>", h)
+
+    # ---- ④ 폭 1320px이 7개 화면 전부에 적용 ----
+    def test_all_screens_share_one_width(self):
+        screens = {
+            "글 목록": viewer.render_list(self.conn),
+            "글 상세": viewer.render_detail(self.conn, 1),
+            "분석": viewer.render_analysis(self.conn),
+            "트렌드": viewer.render_trends(self.conn),
+            "주제 검수": viewer.render_topics(self.conn),
+            "데이터": viewer.render_data(self.conn),
+            "팩트 목록": viewer.render_facts(self.conn),
+            "팩트 상세": viewer.render_fact(self.conn, 1),
+        }
+        for name, h in screens.items():
+            self.assertIn(f".wrap {{ max-width: {self.WRAP}px;", h, f"{name} 폭이 다르다")
+            self.assertNotIn("max-width: 1100px", h, f"{name}에 옛 폭이 남아 있다")
+
+    # ---- ⑤ 색 가짓수가 늘지 않았다(이름만 옮겨 담았다) ----
+    def test_no_new_colour_values(self):
+        import re
+        with open(os.path.join(ROOT, "templates", "tokens.css"), encoding="utf-8") as f:
+            tokens = f.read()
+
+        def hexes(text):
+            out = set()
+            for v in re.findall(r"#[0-9a-fA-F]{3,6}\b", text):
+                v = v.lower()
+                if len(v) == 4:      # #fff → #ffffff (같은 색을 두 번 세지 않게)
+                    v = "#" + "".join(c * 2 for c in v[1:])
+                out.add(v)
+            return out
+        # 뷰어 + tokens에 실제로 쓰이는 색 값 전부. 새 색을 만들면 이 목록이 어긋나 실패한다.
+        expected = {
+            "#17457f", "#0f2f5c", "#26a699", "#16233b", "#5b6b82", "#ffffff", "#e5eaf1",
+            "#fff6e5", "#8a5a00", "#1f7a52", "#e7f4ee", "#b3261e", "#fbe9e7",
+            "#eef1f5", "#eef4fb", "#f4f6fa", "#eaf7f5",
+        }
+        self.assertEqual(hexes(tokens) | hexes(viewer.PAGE_CSS), expected)
+        # 이름을 붙인 4개는 뷰어에서 사라지고 tokens.css 한 곳에서만 정의된다
+        for lit in ("#eef1f5", "#eef4fb", "#f4f6fa"):
+            self.assertNotIn(lit, viewer.PAGE_CSS)
+        self.assertNotIn("color: #fff;", viewer.PAGE_CSS)
+        for name in ("--fill:", "--hover:", "--bg:", "--on-brand:"):
+            self.assertIn(name, tokens)
+
+    # ---- 팩트 목록: 묶음 머리가 '종류' 열을 대신하되 개별 줄의 정보는 안 사라진다 ----
+    def test_fact_list_group_heads_keep_category_info(self):
+        h = viewer.render_facts(self.conn)
+        self.assertIn("공통 팩트 1건", h)
+        self.assertIn("개별 팩트 1건", h)
+        self.assertIn(">보육</div>", h)          # 개별 줄의 카테고리는 그대로 보인다
+        self.assertIn("공통 팩트는 항목명이 곧 카테고리라", h)
+        self.assertIn("전체(2)", h)              # 걸러 보기에 건수
+        self.assertIn("공통(1)", h)
+        # 0건인 묶음은 머리도 그리지 않는다
+        self.assertNotIn("개별 팩트 0건", viewer.render_facts(self.conn, kind="common"))
+
+    def test_fact_list_marks_reviewed_rows_with_a_letter(self):
+        # 색만으로 구분하지 않는다 — 확인함 줄은 항목명 앞에 ✓
+        self.conn.execute("UPDATE rulebook_facts SET review_status='확인함' WHERE fact_id=1")
+        self.conn.commit()
+        try:
+            h = viewer.render_facts(self.conn)
+            self.assertIn("<div class='r-title'>✓ 사회복지사2급</div>", h)
+            self.assertNotIn("<div class='r-title'>✓ 보육교사2급</div>", h)
+        finally:
+            self.conn.execute("UPDATE rulebook_facts SET review_status='미확인' WHERE fact_id=1")
+            self.conn.commit()
+
+    def test_screens_stay_read_only(self):
+        before = self.conn.execute(
+            "SELECT COUNT(*) c FROM rulebook_facts").fetchone()["c"]
+        viewer.render_facts(self.conn)
+        viewer.render_fact(self.conn, 1)
+        viewer.render_list(self.conn)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM rulebook_facts").fetchone()["c"], before)
 
 
 if __name__ == "__main__":
