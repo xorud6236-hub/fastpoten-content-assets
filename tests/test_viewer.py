@@ -663,6 +663,69 @@ class TestListFilters(unittest.TestCase):
             self.conn.commit()
 
 
+class TestTopicCountGap(unittest.TestCase):
+    """주제 옆 숫자(창고 글 수)와 목록 건수(본문 가져온 글)가 어긋나는 것을 화면이 설명하는가.
+
+    ★ 기존 표본은 10건 모두 본문이 있어 두 숫자가 같아져 회귀를 못 잡았다 →
+      여기서는 **본문 없는 글을 일부러 넣는다.**
+    글 7건: 주제 '플래너' 5건(본문 3 · 본문없음 2) / 주제 '요양보호사' 2건(전부 본문 없음)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "gap.sqlite3"))
+        db.init_db(cls.conn)
+        raw = os.path.join(cls.tmp, "body_raw.txt")
+        _write(raw, "본문")
+        rows = [(1, "플래너 자격증", raw), (2, "플래너 자격증", raw), (3, "플래너 자격증", raw),
+                (4, "플래너비용", None), (5, "플래너비용", None),          # 창고엔 있고 본문 없음
+                (6, "요양보호사 자격증", None), (7, "요양보호사 자격증", None)]  # 주제 전체가 본문 없음
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, keyword, extraction_status, body_raw_path) "
+            "VALUES (?,?,?,'성공(자동추출)',?)",
+            [(i, f"글{i}", k, p) for i, k, p in rows])
+        cls.conn.commit()
+        import keyword_normalize as kn
+        assert kn.normalize("플래너 자격증") == "플래너"
+        assert kn.normalize("요양보호사 자격증") == "요양보호사"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_screen_explains_what_each_number_counts(self):
+        h = viewer.render_list(self.conn, topic="플래너")
+        self.assertEqual(h.count("class='listrow'"), 3)      # 목록은 본문 가져온 3건
+        self.assertIn("창고에 주제 ‘플래너’로 쓴 글은 <b>5건</b>", h)
+        self.assertIn("본문을 가져온 글은 3건</b>", h)
+        self.assertIn("아래 목록에는 본문을 가져온 글만 나옵니다", h)
+        self.assertIn("트렌드·분석 화면에서 주제 이름 옆에 보이는 숫자는 창고 글 수", h)
+
+    def test_topic_with_no_body_says_why_it_is_empty(self):
+        h = viewer.render_list(self.conn, topic="요양보호사")
+        self.assertEqual(h.count("class='listrow'"), 0)
+        self.assertIn("쓴 글은 2건 있지만", h)
+        self.assertIn("본문을 가져온 글이 아직 없습니다", h)
+        self.assertNotIn("그런 주제가 창고에 없습니다", h)     # ★ '없는 주제'와 다른 상황
+        self.assertIn("걸러 보는 중:", h)
+
+    def test_unknown_topic_message_is_different(self):
+        h = viewer.render_list(self.conn, topic="창고에없는주제")
+        self.assertIn("그런 주제가 창고에 없습니다", h)
+        self.assertNotIn("본문을 가져온 글이 아직 없습니다", h)
+
+    def test_two_screens_use_one_helper_and_agree(self):
+        m = viewer.topic_members(self.conn)
+        self.assertEqual(sum(n for _, n, _ in m["플래너"]), 5)
+        self.assertEqual(sum(nb for _, _, nb in m["플래너"]), 3)
+        h_list = viewer.render_list(self.conn, topic="플래너")
+        h_topics = viewer.render_topics(self.conn)
+        self.assertIn("창고에 주제 ‘플래너’로 쓴 글은 <b>5건</b>", h_list)
+        self.assertIn("<div>플래너</div><div class='num'>5</div>", h_topics)   # 주제 검수도 같은 5
+        self.assertIn("플래너 자격증(3)", h_list)              # 원본 키워드 대조(창고 글 수)
+
+
 class TestTrendsHeatmapExplain(unittest.TestCase):
     """히트맵 숫자 설명(사용 피드백 3차) — 사용자가 칸의 몫(%)을 '순위'로 오해했던 회귀 방지.
 
