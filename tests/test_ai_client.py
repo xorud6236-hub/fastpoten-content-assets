@@ -130,11 +130,15 @@ class TestAiClient(unittest.TestCase):
         self.conn = db.get_connection(self.dbp)
         self.spend = os.path.join(self.tmp, "spend_%s.json" % self.id().rsplit(".", 1)[-1])
         self.logs = os.path.join(self.tmp, "logs_%s" % self.id().rsplit(".", 1)[-1])
-        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        # 열쇠 자리를 임시 폴더로 돌린다 — 테스트가 진짜 열쇠를 절대 집지 않게
+        self._real_key_path = ai_client.KEY_PATH
+        ai_client.KEY_PATH = os.path.join(self.tmp, "key_%s.txt" % self.id().rsplit(".", 1)[-1])
+        with open(ai_client.KEY_PATH, "w", encoding="utf-8") as f:
+            f.write(FAKE_KEY)
 
     def tearDown(self):
         self.conn.close()
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+        ai_client.KEY_PATH = self._real_key_path
 
     def _ask(self, prompt, client, **kw):
         return ai_client.ask(self.conn, prompt, client=client,
@@ -178,11 +182,35 @@ class TestAiClient(unittest.TestCase):
 
     # ③ 열쇠가 없으면 죽지 않는다
     def test_no_key(self):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+        ai_client.KEY_PATH = os.path.join(self.tmp, "없는열쇠.txt")
         r = self._ask("안녕", None)
         self.assertEqual(r.status, "no_key")
         self.assertIn("열쇠", r.message)
         self.assertTrue(r.mask_hits == {} or isinstance(r.mask_hits, dict))
+
+    # ③-c 열쇠 파일은 사람이 만든다 — BOM·메모 줄·깨진 인코딩에도 죽지 않는다
+    def test_key_file_is_forgiving(self):
+        p = os.path.join(self.tmp, "손으로만든열쇠.txt")
+        ai_client.KEY_PATH = p
+        # 메모장이 붙이는 BOM + 사람이 적어둔 메모 줄이 섞여도 열쇠만 뽑는다
+        with open(p, "w", encoding="utf-8-sig") as f:
+            f.write("\n# 원고용 열쇠\n%s\n" % FAKE_KEY)
+        self.assertEqual(ai_client.read_key(), FAKE_KEY)
+        # 파워셸이 만들 수 있는 UTF-16 파일 — 터지지 않고 '열쇠 없음'으로 떨어진다
+        with open(p, "w", encoding="utf-16") as f:
+            f.write(FAKE_KEY)
+        self.assertEqual(ai_client.read_key(), "")
+        self.assertEqual(self._ask("안녕", None).status, "no_key")
+
+    # ③-b 환경변수는 열쇠 자리가 아니다 — 거기 두면 클로드 코드가 발견해 쓴다(2026-07-21)
+    def test_env_var_is_never_a_key_source(self):
+        ai_client.KEY_PATH = os.path.join(self.tmp, "없는열쇠2.txt")
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        try:
+            self.assertEqual(ai_client.read_key(), "")
+            self.assertEqual(self._ask("안녕", None).status, "no_key")
+        finally:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
 
     # ④ 열쇠 값은 안내문·기록 어디에도 안 나온다
     def test_key_never_printed(self):
