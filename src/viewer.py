@@ -387,11 +387,10 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 /* 팩트 룰북 목록 — 항목명·종류·카테고리·상태·고친 칸·확인 날짜 */
 .an11 .listhead, .an11 .listrow { grid-template-columns: 2.4fr 0.7fr 1.2fr 1fr 0.8fr 1fr;
             min-width: 720px; }
-/* 분석(재료 찾기) 표 — 주제별 우리 글 / 아직 거의 안 쓴 주제 / 담당자별 우리 글 */
+/* 분석(재료 찾기) 표 — 주제별 우리 글(an12) / 팩트 항목 맞춰보기·담당자별(an13, 둘 다 4열) */
 .an12 .listhead, .an12 .listrow { grid-template-columns: 2.4fr 0.8fr 1.1fr 1fr 1fr;
             min-width: 640px; }
-.an13 .listhead, .an13 .listrow { grid-template-columns: 2fr 1.2fr 1fr 0.9fr; min-width: 560px; }
-.an14 .listhead, .an14 .listrow { grid-template-columns: 2fr 0.8fr 1.1fr 1fr; min-width: 520px; }
+.an13 .listhead, .an13 .listrow { grid-template-columns: 2fr 1fr 1.2fr 1fr; min-width: 560px; }
 /* 결론 난 참고표 접기 — 손가락 크기(44px)와 굵은 글자. 브라우저 기본 details/summary */
 .foldsec { margin-top: 32px; }
 .foldsec > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer;
@@ -965,7 +964,8 @@ def pager_html(view, sort, page_no, n_pages, cafe="", staff="", topic=""):
 SECTION1_TOP = 50   # 섹션1 표에 보일 상위 건수(결정 5)
 SECTION2_TOP = 20   # 섹션2 키워드 상위 N
 TOPIC_TOP = 50      # 섹션 A(주제별 우리 글)에 한 번에 보일 주제 수 — 주제는 1,300종이 넘는다
-FACT_GAP_TOP = 20   # 섹션 B(아직 거의 안 쓴 주제)에 보일 팩트 항목 수
+TOPIC_MORE = 200    # '더 보기'를 누르면 보일 주제 수(사용자 확정: 50 → 200)
+FACT_GAP_TOP = 20   # 섹션 B(팩트 항목 이름 맞춰보기)에 보일 팩트 항목 수
 ANALYSIS_TITLE = "주제로 우리 글 찾기"
 TOPIC_SORTS = ("many", "few", "name")
 
@@ -1020,27 +1020,32 @@ def analysis_staff_rows(conn):
 
 
 def fact_gap_rows(conn, topic_n):
-    """룰북 팩트 항목별로 '그 주제로 쓴 글'이 몇 건인지 — 적은 것부터.
+    """룰북 팩트 항목 이름이 우리 글 주제 이름과 맞는지 — 안 맞은 것 먼저, 그다음 글 적은 것부터.
     팩트 항목 이름도 글 키워드와 같은 방법(kn.normalize)으로 묶어 맞춰본다.
-    점수·추천이 아니다 — 글 수가 적다는 사실 하나로만 줄을 세운다."""
+    ★ 이 표가 아는 건 '이름이 맞았는지'뿐이다. 이름이 안 맞은 항목(matched=False)을 '0건'으로
+      찍으면 '안 썼다'는 거짓말이 된다(실측: 이름만 다르고 83편을 쓴 주제가 있었다).
+    점수·추천이 아니다 — 이름이 맞았는지와 글 수, 두 사실로만 줄을 세운다."""
     rows = conn.execute(
         "SELECT fact_id, item_name, category, review_status FROM rulebook_facts").fetchall()
     out = []
     for r in rows:
         t = kn.normalize(r["item_name"] or "")
+        hit = bool(t) and t in topic_n      # 글 주제 목록에 그 이름이 실제로 있는가
         out.append(dict(fact_id=r["fact_id"], name=r["item_name"] or "(이름 없음)",
                         cat=r["category"] or "-", status=r["review_status"] or "미확인",
-                        topic=t, n=(topic_n.get(t, 0) if t else 0)))
-    out.sort(key=lambda x: (x["n"], x["name"]))
+                        topic=(t if hit else ""), matched=hit,
+                        n=(topic_n.get(t, 0) if hit else 0)))
+    out.sort(key=lambda x: (x["matched"], x["n"], x["name"]))
     return out
 
 
-def render_analysis(conn, sort="views", min_age=False, tsort="many"):
+def render_analysis(conn, sort="views", min_age=False, tsort="many", more=False):
     """창고에서 원고 재료를 찾는 입구. 위 세 섹션(주제·팩트·담당자)은 조회수를 쓰지 않고,
     결론이 난 조회수 표들은 아래 접기 안에 그대로 남는다(지우지 않음)."""
     # 입력검증: sort·tsort를 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
     sort = "vpd" if sort == "vpd" else "views"
     tsort = tsort if tsort in TOPIC_SORTS else "many"
+    more = bool(more)
     topbar_menu = nav_menu("analysis")
     try:
         recs = analysis_records(conn, datetime.date.today())
@@ -1073,13 +1078,26 @@ def render_analysis(conn, sort="views", min_age=False, tsort="many"):
     pct = (n_target * 100 // n_posts) if n_posts else 0
     honest_top = (
         "<div class='honest'>여기 숫자로 <b>알 수 있는 것</b>: 어떤 주제로 몇 편을 썼는지, "
-        "그 주제 글이 보통 몇 문단·몇 장짜리인지, 아직 거의 안 쓴 주제가 무엇인지.<br>"
+        "그 주제 글이 보통 몇 문단·몇 장짜리인지, 룰북 팩트 항목 이름이 글 주제와 맞는지.<br>"
         "여기 숫자로 <b>알 수 없는 것</b>: 어떤 글이 잘 됐는지. 카페 조회수는 참고 신호일 뿐이고, "
         f"조회수가 있는 글도 전체의 {pct}%({_comma(n_target)}건)뿐입니다. 잘 됐는지는 우리 "
         "홈페이지·워드프레스 실측이 쌓여야 답할 수 있습니다.</div>")
 
     def on(cond):
         return " class='on'" if cond else ""
+
+    def alink(**over):
+        """이 화면 주소 — 지금 고른 것(정렬·기간·더 보기)을 그대로 달고 다닌다(바뀌는 것만 넘긴다).
+        한 곳에서만 만든다: 예전엔 조각을 손으로 두 벌 이어붙여 한쪽 상태가 링크마다 흘렸다."""
+        d = dict(sort=sort, min_age=min_age, tsort=tsort, more=more)
+        d.update(over)
+        q = [(k, v) for k, v in (("sort", d["sort"]), ("tsort", d["tsort"]))
+             if v not in ("views", "many")]      # 기본값은 주소에 적지 않는다(주소가 짧게)
+        if d["min_age"]:
+            q.append(("min_age", 30))
+        if d["more"]:
+            q.append(("more", TOPIC_MORE))
+        return "/analysis?" + urllib.parse.urlencode(q) if q else "/analysis"
 
     # --- 섹션 A: 주제별 우리 글(조회수 없이도 나온다) ---
     # 동률이면 언제나 주제 이름 가나다순 — 열 때마다 순서가 흔들려 보이지 않게(명세 §2-3의 규칙)
@@ -1089,7 +1107,8 @@ def render_analysis(conn, sort="views", min_age=False, tsort="many"):
         trows.sort(key=lambda t: (t["n"], t["topic"]))
     else:
         trows.sort(key=lambda t: (-t["n"], t["topic"]))
-    a_shown = trows[:TOPIC_TOP]
+    limit = TOPIC_MORE if more else TOPIC_TOP
+    a_shown = trows[:limit]
 
     def _avg_cell(total, denom):
         return f"{total / denom:.1f}" if denom else "-"
@@ -1104,54 +1123,71 @@ def render_analysis(conn, sort="views", min_age=False, tsort="many"):
         f"<div class='num'>{_avg_cell(t['np'], t['nb'])}</div>"
         f"<div class='num'>{_avg_cell(t['ni'], t['nb'])}</div></div>"
         for t in a_shown)
-    tq = f"&sort={sort}" + ("&min_age=30" if min_age else "")
     a_sortbar = ("<div class='filters'>정렬: "
-                 f"<a href='/analysis?tsort=many{tq}'{on(tsort == 'many')}>많이 쓴 순</a> · "
-                 f"<a href='/analysis?tsort=few{tq}'{on(tsort == 'few')}>적게 쓴 순</a> · "
-                 f"<a href='/analysis?tsort=name{tq}'{on(tsort == 'name')}>가나다순</a></div>")
+                 f"<a href='{alink(tsort='many')}'{on(tsort == 'many')}>많이 쓴 순</a> · "
+                 f"<a href='{alink(tsort='few')}'{on(tsort == 'few')}>적게 쓴 순</a> · "
+                 f"<a href='{alink(tsort='name')}'{on(tsort == 'name')}>가나다순</a></div>")
     if a_shown:
         a_table = f"<div class='an12'><div class='tablewrap'>{a_head}{a_rows}</div></div>"
     else:
         a_table = ("<div class='state'>주제로 묶을 글이 아직 없습니다. "
                    "글에 키워드가 적혀 있어야 주제로 묶입니다.</div>")
+    # '더 보기'는 주소 링크로만(자바스크립트 0) — 목록 화면의 쪽 이동과 같은 방식
+    a_more = (f"<div class='filters'><a href='{alink(more=not more)}'>"
+              + (f"처음 {_comma(TOPIC_TOP)}개만 보기" if more
+                 else f"더 보기({_comma(TOPIC_MORE)}개까지) →")
+              + "</a></div>") if len(trows) > TOPIC_TOP else ""
     secA = ("<h2 class='sec'>주제별 우리 글</h2>"
             "<p class='intro sub'>비슷한 키워드를 하나의 주제로 묶어 센 것입니다. "
             f"‘쓴 글’은 창고에 든 글 수예요. 주제 {_comma(len(trows))}개 중 "
             f"{_comma(len(a_shown))}개가 보입니다.</p>"
-            f"{a_sortbar}{a_table}"
+            "<p class='intro sub'>‘조회수 있는 글’은 우리가 카페에서 직접 가져와 조회수를 "
+            "확보한 글이에요 — 엑셀에 적혀 온 숫자는 여기 세지 않습니다.</p>"
+            f"{a_sortbar}{a_table}{a_more}"
             "<p class='intro sub'>‘평균 문단·이미지’는 그 주제 글이 보통 어떻게 생겼는지입니다"
             "(본문을 가져온 글만으로 계산). 잘 된 글의 기준이 아니라 원고 틀을 잡을 때 쓰는 "
             "숫자예요.</p>")
 
-    # --- 섹션 B: 아직 거의 안 쓴 주제(룰북 팩트 기준) ---
+    # --- 섹션 B: 팩트 항목 이름이 우리 글 주제와 맞나 ---
+    #   ★ 이름이 안 맞은 항목을 '0건'으로 찍지 않는다 — '안 썼다'가 아니라 '이름이 안 맞는다'가 사실.
     if facts:
         n_un = sum(1 for f in facts if f["status"] == "미확인")
+        n_hit = sum(1 for f in facts if f["matched"])
         b_head = ("<div class='listhead'><div>팩트 항목</div><div>카테고리</div>"
-                  "<div class='num'>그 주제로 쓴 글</div><div>팩트 보기</div></div>")
+                  "<div>맞은 주제</div><div class='num'>그 주제로 쓴 글</div></div>")
         b_rows = []
         for f in facts[:FACT_GAP_TOP]:
-            cnt = (f"<a href='{list_href(topic=f['topic'])}'>{_comma(f['n'])}건</a>"
-                   if f["topic"] and f["n"] else f"{_comma(f['n'])}건")
+            if f["matched"]:
+                c3 = (f"주제 ‘<a href='{list_href(topic=f['topic'])}'>{esc(f['topic'])}</a>’")
+                c4 = f"<div class='num'>{_comma(f['n'])}편</div>"
+            else:
+                c3 = "이름이 안 맞음 — 직접 찾아보세요"
+                c4 = "<div class='num'><a href='/'>글 목록에서 찾기 →</a></div>"
             b_rows.append(
                 "<div class='listrow static'>"
                 f"<div><a class='r-title' href='/fact?id={f['fact_id']}'>{esc(f['name'])}</a> "
                 f"{fact_badge(f['status'])}</div>"
                 f"<div>{esc(f['cat'])}</div>"
-                f"<div class='num'>{cnt}</div>"
-                f"<div><a href='/fact?id={f['fact_id']}'>팩트 보기 →</a></div></div>")
-        secB = ("<h2 class='sec'>아직 거의 안 쓴 주제</h2>"
-                f"<p class='intro sub'>룰북 팩트에 정리해 둔 {_comma(len(facts))}개 항목 중, "
-                f"그 이름으로 쓴 글이 적은 것부터 {_comma(min(len(facts), FACT_GAP_TOP))}개입니다. "
-                "팩트 항목 이름과 글 키워드가 서로 다른 말이면 실제보다 적게 잡힐 수 있어요 — "
-                "0건으로 보이면 글 목록에서 직접 찾아보고 판단해 주세요.</p>"
-                f"<div class='honest'>룰북 팩트는 AI가 만든 초안이라 아직 사람이 확인하지 "
-                f"않았습니다 — {_comma(len(facts))}건 중 <b>{_comma(n_un)}건이 ‘미확인’</b>입니다. "
+                f"<div>{c3}</div>{c4}</div>")
+        secB = ("<h2 class='sec'>팩트 항목 이름, 우리 글 주제와 맞나</h2>"
+                f"<p class='intro sub'>룰북에 정리해 둔 팩트 항목 {_comma(len(facts))}개의 이름을 "
+                "우리 글 주제 이름과 그대로 맞춰 본 것입니다 — "
+                f"<b>맞은 것 {_comma(n_hit)}개 · 안 맞은 것 {_comma(len(facts) - n_hit)}개</b>. "
+                "안 맞은 것을 먼저, 그다음 글이 적은 것부터 "
+                f"{_comma(min(len(facts), FACT_GAP_TOP))}개가 보입니다.</p>"
+                "<div class='honest'>이 표가 아는 것은 <b>이름이 맞았는지</b>뿐이고, 그 주제로 글을 "
+                "썼는지 안 썼는지가 아닙니다. 이름이 안 맞아도 <b>다른 말로 이미 쓴 글이 있을 수 "
+                "있어요</b> — 그럴 땐 글 목록에서 직접 찾아보고 판단해 주세요.<br>"
+                "이름이 맞은 줄의 숫자는 <b>그 주제 전체의 글 수</b>입니다. 그래서 이름이 다른 "
+                "항목이라도 같은 주제에 붙으면 같은 숫자가 나옵니다.<br>"
+                f"룰북 팩트는 AI가 만든 초안이라 아직 사람이 확인하지 않았습니다 — "
+                f"{_comma(len(facts))}건 중 <b>{_comma(n_un)}건이 ‘미확인’</b>입니다. "
                 "여기 이름을 보고 원고를 쓰기 전에 팩트 화면에서 내용을 먼저 확인하세요.</div>"
                 f"<div class='an13'><div class='tablewrap'>{b_head}{''.join(b_rows)}</div></div>")
     else:
-        secB = ("<h2 class='sec'>아직 거의 안 쓴 주제</h2>"
+        secB = ("<h2 class='sec'>팩트 항목 이름, 우리 글 주제와 맞나</h2>"
                 "<div class='state'>룰북 팩트가 아직 창고에 없습니다. 팩트를 넣으면 여기서 "
-                "‘아직 안 쓴 주제’를 볼 수 있어요."
+                "팩트 항목 이름이 우리 글 주제와 맞는지 볼 수 있어요."
                 "<div style='margin-top:12px'><a href='/facts'>팩트 룰북 →</a></div></div>")
 
     # --- 섹션 C: 담당자별 우리 글(쓴 글 + 평균 조회수) ---
@@ -1168,9 +1204,12 @@ def render_analysis(conn, sort="views", min_age=False, tsort="many"):
         for s in srows)
     secC = ("<h2 class='sec'>담당자별 우리 글<span class='secsub'>쓴 글 많은 순</span></h2>"
             "<p class='intro sub'>담당자 이름을 누르면 그 담당자가 쓴 글 목록이 열립니다. "
-            "‘평균 조회수’는 조회수를 확보한 글만으로 낸 참고 신호예요 — 사람을 견주는 "
+            "‘조회수 있는 글’은 우리가 카페에서 직접 가져와 조회수를 확보한 글이고, "
+            "‘평균 조회수’는 그 글들만으로 낸 참고 신호예요 — 사람을 견주는 "
             "숫자가 아닙니다.</p>"
-            f"<div class='an14'><div class='tablewrap'>{c_head}{c_rows}</div></div>")
+            f"<div class='an13'><div class='tablewrap'>{c_head}{c_rows}</div></div>"
+            "<p class='intro sub'>위 세 표(주제별·팩트 항목·담당자별)는 아래 접기 안의 정렬·기간을 "
+            "바꿔도 달라지지 않습니다 — 언제나 창고 전체 기준이에요.</p>")
 
     upper = f"<div class='wrap'>{intro}{honest_top}{secA}" \
             f"<div style='margin-top:32px'>{secB}</div>" \
@@ -1193,15 +1232,13 @@ def render_analysis(conn, sort="views", min_age=False, tsort="many"):
     used = [r for r in recs if r["dg"] is not None and r["dg"] >= 30] if min_age else recs
 
     # --- 조절 바(주소 링크로만, JS 없음) ---
-    ageq = "&min_age=30" if min_age else ""
-    tsq = f"&tsort={tsort}" if tsort != "many" else ""
     controls = (
         "<div class='filters'>정렬: "
-        f"<a href='/analysis?sort=views{ageq}{tsq}'{on(sort=='views')}>조회수 순</a> · "
-        f"<a href='/analysis?sort=vpd{ageq}{tsq}'{on(sort=='vpd')}>하루당 조회수 순</a>"
+        f"<a href='{alink(sort='views')}'{on(sort=='views')}>조회수 순</a> · "
+        f"<a href='{alink(sort='vpd')}'{on(sort=='vpd')}>하루당 조회수 순</a>"
         "&nbsp;&nbsp;|&nbsp;&nbsp;기간: "
-        f"<a href='/analysis?sort={sort}{tsq}'{on(not min_age)}>전체</a> · "
-        f"<a href='/analysis?sort={sort}&min_age=30{tsq}'{on(min_age)}>올린 지 30일 지난 글만</a>"
+        f"<a href='{alink(min_age=False)}'{on(not min_age)}>전체</a> · "
+        f"<a href='{alink(min_age=True)}'{on(min_age)}>올린 지 30일 지난 글만</a>"
         "<div class='note'>하루당 조회수는 최근에 올린 글이 높게 나오는 경향이 있어요"
         "(조회가 초반에 몰림). 오래된 글과 견줄 땐 '조회수 순'도 함께 보세요.</div></div>")
 
@@ -1958,7 +1995,8 @@ def make_handler(db_path):
                     self._send_html(render_analysis(
                         conn, qs.get("sort", ["views"])[0],
                         qs.get("min_age", [None])[0] == "30",
-                        qs.get("tsort", ["many"])[0]))
+                        qs.get("tsort", ["many"])[0],
+                        qs.get("more", [None])[0] == str(TOPIC_MORE)))
                 elif u.path == "/trends":
                     self._send_html(render_trends(conn))
                 elif u.path == "/topics":

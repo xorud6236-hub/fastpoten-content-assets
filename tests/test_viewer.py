@@ -223,7 +223,7 @@ class TestViewerInvariant(unittest.TestCase):
         h = self._get("/analysis")
         self.assertIn("주제로 우리 글 찾기", h)              # 화면 제목(메뉴 이름은 '분석' 그대로)
         self.assertIn("주제별 우리 글", h)                    # 섹션 A
-        self.assertIn("아직 거의 안 쓴 주제", h)              # 섹션 B
+        self.assertIn("팩트 항목 이름, 우리 글 주제와 맞나", h)   # 섹션 B
         self.assertIn("담당자별 우리 글", h)                  # 섹션 C
         # 결론 난 조회수 표들은 지워지지 않고 접기 안에 남아 있다
         self.assertIn("조회수 높은 글", h)
@@ -1010,7 +1010,7 @@ class TestAnalysisWithoutViewCounts(unittest.TestCase):
         # ★ 역할 전환의 실질 — 조회수 0건이어도 세 섹션이 다 나온다
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) c FROM reference_signals").fetchone()["c"], 0)
-        for sec in ("주제별 우리 글", "아직 거의 안 쓴 주제", "담당자별 우리 글"):
+        for sec in ("주제별 우리 글", "팩트 항목 이름, 우리 글 주제와 맞나", "담당자별 우리 글"):
             self.assertIn(sec, self.html)
         self.assertIn("창고 글 7건", self.html)
         self.assertNotIn("아직 분석할 글이 없습니다", self.html)   # 예전엔 여기서 화면이 끝났다
@@ -1040,6 +1040,28 @@ class TestAnalysisWithoutViewCounts(unittest.TestCase):
         self.assertIn("<span class='badge dim'>미확인</span>", self.html)
         self.assertNotIn("추천 주제", self.html)         # 점수·추천을 새로 만들지 않는다
 
+    def test_unmatched_fact_says_name_mismatch_not_zero(self):
+        # ★ 이번 수정의 핵심 — 이름이 안 맞은 항목을 '0건'(=안 썼다)으로 찍지 않는다.
+        #   실제 창고에서 '편입학 — 사이버대·방통대'가 0건으로 뜨는데 방통대 글이 83편 있었다.
+        secb = self.html.split("팩트 항목 이름, 우리 글 주제와 맞나")[1].split("담당자별 우리 글")[0]
+        self.assertIn("이름이 안 맞음 — 직접 찾아보세요", secb)
+        self.assertNotIn("0건", secb)
+        self.assertIn("글 목록에서 찾기 →", secb)          # 직접 찾아볼 길이 화면에 있다
+
+    def test_matched_fact_shows_which_topic_it_landed_on(self):
+        # 이름이 맞은 줄은 '어느 주제에 붙어 몇 편인지'를 화면이 말한다(같은 숫자가 나오는 이유)
+        self.assertIn("맞은 주제", self.html)                 # 표 머리
+        self.assertIn("주제 ‘<a href='/?topic=", self.html)
+        self.assertIn(">5편</div>", self.html)                # 주제 '플래너' 5편
+
+    def test_fact_match_counts_are_on_screen(self):
+        # 이 표를 얼마나 믿을지 스스로 판단할 수 있게 맞은 수·안 맞은 수를 적는다
+        self.assertIn("맞은 것 1개 · 안 맞은 것 1개", self.html)
+
+    def test_upper_tables_say_they_ignore_the_folded_filters(self):
+        self.assertIn("언제나 창고 전체 기준", self.html)
+        self.assertIn("우리가 카페에서 직접 가져와 조회수를 확보한 글", self.html)
+
     def test_concluded_view_tables_are_folded_not_deleted(self):
         self.assertIn("<details class='foldsec'", self.html)
         self.assertIn("조회수를 확보한 글이 아직 없습니다", self.html)
@@ -1061,7 +1083,7 @@ class TestAnalysisWithoutViewCounts(unittest.TestCase):
 
     def test_analysis_tables_scroll_instead_of_wrapping(self):
         # 좁은 화면에서 칸이 접히지 않고 표가 가로로 밀린다(사용 피드백 6번 후반)
-        for cls_name in ("an12", "an13", "an14"):
+        for cls_name in ("an12", "an13"):        # 팩트·담당자 표는 같은 4열 틀을 함께 쓴다
             self.assertIn(f"class='{cls_name}'", self.html)
         self.assertEqual(self.html.count("class='tablewrap'"), 3)   # 세 표 모두 감싸짐
 
@@ -1075,6 +1097,53 @@ class TestAnalysisWithoutViewCounts(unittest.TestCase):
     def test_no_pii_leak(self):
         for bad in (PII_PHONE, PII_NAME, OPENCHAT, PARA_RAW_SENTINEL):
             self.assertNotIn(bad, self.html)
+
+
+class TestAnalysisTopicMore(unittest.TestCase):
+    """주제 표의 '더 보기' — 기본 50개, 누르면 200개까지(자바스크립트 없이 주소로만)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "many.sqlite3"))
+        db.init_db(cls.conn)
+        # 주제 260개 — 기본(50)·더 보기(200) 두 상한을 모두 넘겨 잘림을 실제로 잰다
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, keyword) VALUES (?,?,?)",
+            [(i, f"글{i}", f"주제{i:04d}자격증") for i in range(1, 261)])
+        cls.conn.commit()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _topic_rows(self, html):
+        return html.count("<div class='listrow static'><div><a class='r-title' href='/?topic=")
+
+    def test_default_shows_50_and_offers_more(self):
+        h = viewer.render_analysis(self.conn)
+        self.assertEqual(self._topic_rows(h), viewer.TOPIC_TOP)
+        self.assertIn("260개 중 50개가 보입니다", h)
+        self.assertIn("더 보기(200개까지) →", h)
+
+    def test_more_shows_200(self):
+        h = viewer.render_analysis(self.conn, more=True)
+        self.assertEqual(self._topic_rows(h), viewer.TOPIC_MORE)
+        self.assertIn("260개 중 200개가 보입니다", h)
+        self.assertIn("처음 50개만 보기", h)          # 되돌아갈 길도 있다
+
+    def test_more_travels_with_sort_links(self):
+        # 정렬을 바꿔도 '더 보기'가 풀리지 않는다(링크를 한 곳에서 만든 덕)
+        h = viewer.render_analysis(self.conn, more=True, tsort="few")
+        self.assertIn("tsort=name&more=200", h)
+
+    def test_read_only(self):
+        before = self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"]
+        h = viewer.render_analysis(self.conn, more=True)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"], before)
+        self.assertNotIn("method='post'", h)
+        self.assertNotIn("<script", h)               # 자바스크립트 0
 
 
 class TestAnalysisMath(unittest.TestCase):
