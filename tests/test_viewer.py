@@ -367,7 +367,7 @@ class TestViewerInvariant(unittest.TestCase):
         self.assertIn("href='/facts'", self._get("/data"))
 
     def test_viewer_is_read_only_no_post(self):
-        # ★ 3차는 읽기 전용 — 뷰어에 쓰기(POST) 경로가 없다(고치기·도장은 4차)
+        # ★ 쓰기는 팩트 저장 주소(/fact/save) 한 곳뿐 — 목록을 비롯한 다른 주소는 쓰기를 안 받는다
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/facts", data=b"x=1")
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req, timeout=5)
@@ -964,6 +964,192 @@ class TestFactsScreens(unittest.TestCase):
         after = self.conn.execute(
             "SELECT COUNT(*), SUM(review_status='미확인') FROM rulebook_facts").fetchone()
         self.assertEqual(tuple(before), tuple(after))
+
+
+class TestFactEditing(unittest.TestCase):
+    """팩트 고치기·도장·되돌리기(4차 — 뷰어의 유일한 쓰기). 임시 창고만 사용.
+
+    ★ 실제 data/ 창고에는 절대 쓰지 않는다(임시 폴더에 새 창고를 만들어 서버를 띄운다).
+    검증하는 것: 저장·되돌리기 / 도장 유지 / 저장 시 개인정보 가림 / 다른 사이트 요청 차단 /
+    정해진 칸 밖 거부 / 길이 상한 / 303 재이동 / 다른 화면은 쓰기 안 받음 / 개인정보 누출 0.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.dbp = os.path.join(cls.tmp, "edit.sqlite3")
+        load_rulebook.run(db_path=cls.dbp)          # 개인정보 패턴 적재(마스킹 재료)
+        conn = db.get_connection(cls.dbp)
+        db.init_db(conn)
+        conn.execute("INSERT INTO staff (staff_name) VALUES ('가상인')")
+        # 이 임시 창고에서는 팩트를 1건만 둔다(화면 숫자를 단순하게 — 룰북 적재분은 필요 없음).
+        conn.execute("DELETE FROM rulebook_facts")
+        cur = conn.execute(
+            "INSERT INTO rulebook_facts (fact_kind, category, item_name, requirement, "
+            "caution_memo, faq_top3, source_version) VALUES ('공통','사회복지',?,?,?,?,'테스트')",
+            ("사회복지사2급(테스트)", "실습 160시간 필수",
+             "2020.1.1 이전 입학자는 실습 120시간", "Q1 실습은 몇 시간인가요? → 120시간 필수"))
+        cls.fid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        cls.httpd = viewer.make_server(db_path=cls.dbp, port=0)
+        cls.port = cls.httpd.server_address[1]
+        cls.th = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.th.start()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    # ---- 도우미 ----
+    def _post(self, fields, origin=True, path=None):
+        """저장 요청. 반환: (상태코드, Location). 303은 따라가지 않는다(재이동 확인용)."""
+        data = urllib.parse.urlencode(fields, encoding="utf-8").encode("utf-8")
+        req = urllib.request.Request(self.base + (path or "/fact/save"), data=data)
+        req.add_header("Host", f"127.0.0.1:{self.port}")
+        if origin:
+            req.add_header("Origin", self.base)
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **kw):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            with opener.open(req, timeout=5) as r:
+                return r.status, r.headers.get("Location")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Location")
+
+    def _get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=5) as r:
+            return r.read().decode("utf-8")
+
+    def _value(self, field):
+        conn = db.get_connection(self.dbp)
+        try:
+            return conn.execute(
+                f"SELECT {field} v FROM rulebook_facts WHERE fact_id=?", (self.fid,)).fetchone()["v"]
+        finally:
+            conn.close()
+
+    # ---- ① 고쳐 저장 → 남고, 되돌리면 원래 값 복구 (계획 5차 완료조건의 실증) ----
+    def test_edit_then_undo_restores_excel_original(self):
+        원래 = self._value("faq_top3")
+        고친값 = "Q1 실습은 몇 시간인가요? → 2020.1.1 이전 120시간 / 이후 160시간"
+        code, loc = self._post({"action": "edit", "id": self.fid,
+                                "field": "faq_top3", "value": 고친값})
+        self.assertEqual(code, 303)                       # ⑦ 저장 후 주소 재이동
+        self.assertIn(f"/fact?id={self.fid}", loc)
+        self.assertEqual(self._value("faq_top3"), 고친값)
+        # 화면(새로고침·서버 재시작과 같은 새 읽기)에도 그대로 남는다 + 고침 표시
+        h = self._get(f"/fact?id={self.fid}")
+        self.assertIn("2020.1.1 이전 120시간 / 이후 160시간", h)
+        self.assertIn("고침", h)
+        self.assertIn("엑셀에서 온 원래 값 보기", h)
+        # 되돌리기 → 엑셀에서 온 원래 값이 복구되고, 되돌린 것도 이력에 남는다
+        code, _ = self._post({"action": "undo", "id": self.fid, "field": "faq_top3"})
+        self.assertEqual(code, 303)
+        self.assertEqual(self._value("faq_top3"), 원래)
+        conn = db.get_connection(self.dbp)
+        try:
+            n = conn.execute("SELECT COUNT(*) c FROM rulebook_fact_edits WHERE fact_id=? "
+                             "AND field_name='faq_top3'", (self.fid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 2, "고침·되돌림이 모두 이력에 남아야 한다(지운 값은 사라지지 않는다)")
+        # 목록의 '고친 칸'은 되돌리면 다시 0(사람을 속이지 않는다)
+        self.assertIn("<div class='num num-dim'>–</div>", self._get("/facts"))
+
+    # ---- ② 도장 → 상태가 바뀌고 다시 읽어도 유지 ----
+    def test_stamp_persists_and_sets_review_date(self):
+        code, loc = self._post({"action": "stamp", "id": self.fid, "status": "확인함",
+                                "note": "협회 확인함"})
+        self.assertEqual(code, 303)
+        self.assertEqual(self._value("review_status"), "확인함")
+        self.assertIsNotNone(self._value("reviewed_at"))     # 목록 '확인 날짜'가 채워진다
+        h = self._get(f"/fact?id={self.fid}")
+        self.assertIn("확인함 ✓", h)
+        self.assertIn("협회 확인함", h)
+        self.assertIn("1건 중 1건 확인함", self._get("/facts"))
+        # 되돌리기 → 미확인으로, 확인 날짜도 비워진다
+        self._post({"action": "undo", "id": self.fid, "field": "review_status"})
+        self.assertEqual(self._value("review_status"), "미확인")
+        self.assertIsNone(self._value("reviewed_at"))
+
+    # ---- ③ 저장에 개인정보 가림이 걸린다(불변 1) ----
+    def test_saved_value_is_masked(self):
+        self._post({"action": "edit", "id": self.fid, "field": "cautions",
+                    "value": f"문의는 {PII_PHONE}, 담당 {PII_NAME}에게"})
+        saved = self._value("cautions")
+        self.assertNotIn(PII_PHONE, saved)
+        self.assertNotIn(PII_NAME, saved)
+        h = self._get(f"/fact?id={self.fid}")           # ⑨ 화면에도 누출 0
+        self.assertNotIn(PII_PHONE, h)
+        self.assertNotIn(PII_NAME, h)
+        self._post({"action": "undo", "id": self.fid, "field": "cautions"})
+
+    # ---- ④ 다른 사이트가 시킨 저장은 처리하지 않는다 ----
+    def test_request_from_other_site_is_refused(self):
+        before = self._value("requirement")
+        data = urllib.parse.urlencode({"action": "edit", "id": self.fid,
+                                       "field": "requirement", "value": "몰래 바꿈"}).encode()
+        req = urllib.request.Request(self.base + "/fact/save", data=data)
+        req.add_header("Origin", "http://evil.example.com")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+        self.assertEqual(self._value("requirement"), before)
+        # 출처를 아예 안 밝힌 요청도 마찬가지
+        req2 = urllib.request.Request(self.base + "/fact/save", data=data)
+        with self.assertRaises(urllib.error.HTTPError) as cm2:
+            urllib.request.urlopen(req2, timeout=5)
+        self.assertEqual(cm2.exception.code, 403)
+        self.assertEqual(self._value("requirement"), before)
+
+    # ---- ⑤ 정해진 칸 밖의 이름으로는 저장 안 됨 ----
+    def test_unknown_field_name_is_refused(self):
+        for bad in ("review_status", "item_name", "source_version", "core_fact"):
+            code, _ = self._post({"action": "edit", "id": self.fid,
+                                  "field": bad, "value": "손대면 안 되는 칸"})
+            self.assertEqual(code, 403, f"{bad} 저장이 막히지 않았다")
+        self.assertEqual(self._value("item_name"), "사회복지사2급(테스트)")
+        self.assertEqual(self._value("review_status"), "미확인")
+        # 정해진 상태 밖의 도장도 거부
+        self.assertEqual(self._post({"action": "stamp", "id": self.fid,
+                                     "status": "대충확인"})[0], 403)
+        self.assertEqual(self._value("review_status"), "미확인")
+
+    # ---- ⑥ 길이 상한 초과는 저장되지 않고, 고치던 내용은 화면에 그대로 ----
+    def test_too_long_value_is_refused_without_losing_input(self):
+        before = self._value("requirement")
+        data = urllib.parse.urlencode(
+            {"action": "edit", "id": self.fid, "field": "requirement",
+             "value": "가" * (viewer.FACT_VALUE_MAX + 1)}, encoding="utf-8").encode("utf-8")
+        req = urllib.request.Request(self.base + "/fact/save", data=data)
+        req.add_header("Origin", self.base)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            h = r.read().decode("utf-8")
+        self.assertEqual(self._value("requirement"), before)     # 저장 안 됨
+        self.assertIn("내용이 너무 깁니다", h)
+        self.assertIn("name='value'", h)                          # 입력 상자가 그대로 있고
+        self.assertIn("가" * 100, h)                              # 고치던 내용도 남아 있다
+
+    # ---- ⑧ 다른 화면들은 여전히 쓰기를 받지 않는다 ----
+    def test_other_screens_still_reject_writes(self):
+        for path in ("/", "/analysis", "/trends", "/topics", "/facts", "/data", "/fact"):
+            code, _ = self._post({"action": "edit", "id": self.fid,
+                                  "field": "requirement", "value": "x"}, path=path)
+            self.assertEqual(code, 405, f"{path}가 쓰기를 받아버렸다")
+
+    # ---- 없는 항목 / 정수 아닌 번호 ----
+    def test_bad_id_is_friendly_and_writes_nothing(self):
+        for bad in ("abc", "1 OR 1", "999999"):
+            code, _ = self._post({"action": "edit", "id": bad,
+                                  "field": "requirement", "value": "x"})
+            self.assertEqual(code, 404)
 
 
 class TestAnalysisWithoutViewCounts(unittest.TestCase):

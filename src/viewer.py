@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""viewer.py — 로컬 품질 확인 뷰어 (읽기 전용, 2차)
+"""viewer.py — 로컬 품질 확인 뷰어
 
 추출된 글을 관리자 1인이 브라우저로 눈검수하는 도구. 파이썬 표준 http.server만 사용
 (새 웹 프레임워크 없음). 화면 2개: 목록(/) · 글 1건 상세(/post?id=N).
+
+★ 창고에 쓰는 곳은 팩트 룰북 화면 한 곳뿐이다(POST /fact/save — 팩트 값 고치기·도장·되돌리기).
+  글 목록·분석·트렌드·주제 검수·데이터는 읽기 전용이고, 다른 주소로 온 쓰기 요청은 거절한다.
 
 ★ 불변 1(마스킹) — 이 파일이 반드시 지키는 것:
   - 왼쪽 '가공 전 원문' 패널: body_raw 파일을 서버가 읽어 masking.mask_text로 개인정보만
@@ -432,6 +435,33 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 /* 누를 수 없는 집계 줄(섹션 2·3·4·트렌드) — hover 강조·커서 없음 */
 .listrow.static { cursor: default; }
 .listrow.static:hover { background: var(--paper); }
+/* ── 팩트 고치기(4차) — 뷰어에 입력 요소가 처음 생긴다. 브라우저 기본을 쓰되 글꼴·폭·높이만 맞춤 ── */
+.fedit label { display: block; font-weight: 700; margin-bottom: 6px; }
+.fedit textarea { width: 100%; min-height: 9em; font-family: var(--font); font-size: 15px;
+        line-height: 1.6; padding: 10px; border: 1px solid var(--line); border-radius: 6px;
+        color: var(--ink); background: var(--paper); }
+.fedit .help { color: var(--muted); font-size: 13px; margin: 6px 0 10px; }
+/* 누르는 것은 전부 손가락 크기(44px). 상태를 바꾸는 것은 버튼, 화면 이동은 링크(모양만 같게) */
+.fedit .btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px;
+        border-radius: 6px; font-family: var(--font); font-size: 15px; font-weight: 700;
+        cursor: pointer; border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
+.fedit .btn:hover { text-decoration: none; }
+.fedit .btn.go { background: var(--brand); border-color: var(--brand); color: #fff; }
+/* 지금 상태인 도장은 눌린 모양(색만이 아니라 테두리 굵기로도 구분) */
+.fedit .btn.on { border-color: var(--brand); border-width: 2px; font-weight: 800; }
+/* 하단 고정 도장 바 — 칸이 7~8개라 상세가 길다. 다 읽고 위로 되돌아가는 왕복을 없앤다 */
+.stampbar { position: sticky; bottom: 0; z-index: 9; background: var(--paper);
+        border-top: 1px solid var(--line); padding: 12px 24px; }
+.stampbar form { max-width: 1100px; margin: 0 auto;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.stampbar details { flex: 1 1 100%; }
+.stampbar summary { min-height: 44px; display: flex; align-items: center;
+        font-weight: 700; color: var(--brand); cursor: pointer; }
+/* 방금 한 행동의 결과 한 줄(.honest는 '항상 떠 있는 정직 경고'라 의미·크기가 다르다) */
+.flash { border: 1px solid var(--ok); background: var(--ok-bg); color: var(--ok);
+        border-radius: 8px; padding: 10px 14px; margin: 0 0 16px; font-weight: 700;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.flash.bad { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
 """
 
 
@@ -1757,9 +1787,12 @@ def render_topics(conn):
 
 
 # ---------------------------------------------------------------------------
-# 화면 G — 팩트 룰북 (읽기 전용: 목록 /facts · 항목 상세 /fact?id=N)
-#   ★ 이 화면은 창고에 아무것도 쓰지 않는다(고치기·도장은 4차). 값은 적재 때 이미 가려져 있고,
-#     화면에서도 esc()로만 내보낸다(불변 1).
+# 화면 G — 팩트 룰북 (목록 /facts · 항목 상세 /fact?id=N · 저장 POST /fact/save)
+#   ★ 뷰어에서 유일하게 창고에 쓰는 화면이다(4차). 다른 화면은 전부 읽기 전용.
+#   ★ 불변 1: 화면에서 저장하는 값도 masking.mask_text를 거쳐 '가려진 값'으로만 저장한다.
+#     화면 출력은 esc()만 통과시킨다.
+#   ★ 데이터 손실 방지: 모든 수정은 rulebook_fact_edits에 남고(이전 값 보존) 칸마다 되돌리기가 있다.
+#     항목 삭제 기능은 만들지 않는다.
 # ---------------------------------------------------------------------------
 # 칸 이름은 엑셀·화면명세 §4 문구 그대로. 순서는 D-B — '주의메모'를 요건(개별=핵심 팩트) 바로
 # 아래로 끌어올린다(이번 모순이 요건↔주의메모↔FAQ 사이에서 났다).
@@ -1785,6 +1818,86 @@ FACT_KINDS = {"common": "공통", "individual": "개별"}
 FACT_ORDER = ("ORDER BY CASE fact_kind WHEN '공통' THEN 0 ELSE 1 END, "
               "COALESCE(category,''), item_name, fact_id")
 
+# ── 4차(쓰기) — 입력검증에 쓰는 정해진 목록 ──────────────────────────────────
+# 고칠 수 있는 칸은 아래 합집합 안에서만(주소·보내온 값으로 다른 칸을 건드릴 수 없다).
+FACT_ALL_FIELDS = {c: label for fs in FACT_FIELDS_BY_KIND.values() for c, label in fs}
+FACT_STATUSES = ("확인함", "보류", "미확인")   # D3 — 상태 3종
+FIELD_STATUS = "review_status"                # 상태 변경도 이력에 남긴다(창고 칸 이름 그대로)
+FIELD_NOTE = "review_note"                    # 검수 메모도 덮어쓰기 전 값을 이력에 남긴다
+FACT_HISTORY_LABEL = {FIELD_STATUS: "상태", FIELD_NOTE: "검수 메모"}
+FACT_VALUE_MAX = 5000        # 한 칸 글자 수 상한
+FACT_POST_MAX = 256 * 1024   # 한 번에 받는 내용 전체 크기 상한(그보다 크면 읽지 않는다)
+FACT_SAVE_PATH = "/fact/save"
+
+
+def fact_origins(conn, fact_id=None):
+    """칸별 '엑셀에서 온 원래 값' = 그 칸의 가장 이른 이력의 이전 값. {(항목번호, 칸): 원래값}"""
+    sql = ("SELECT fact_id, field_name, old_value FROM rulebook_fact_edits "
+           "WHERE edit_id IN (SELECT MIN(edit_id) FROM rulebook_fact_edits "
+           "                  GROUP BY fact_id, field_name)")
+    args = ()
+    if fact_id is not None:
+        sql += " AND fact_id=?"
+        args = (fact_id,)
+    return {(r["fact_id"], r["field_name"]): r["old_value"] for r in conn.execute(sql, args)}
+
+
+def fact_save_field(conn, fact_id, field, value):
+    """한 칸 저장 — 이전 값을 이력에 남기고(되돌리기 재료) 새 값으로 바꾼다.
+
+    ★ value는 이미 가려진 값이어야 한다(불변 1은 부르는 쪽 do_POST에서 통과시킨다).
+    바뀐 게 없으면 아무것도 쓰지 않는다(빈 이력이 쌓이지 않게).
+    """
+    # 자체검증: 정해진 칸 밖의 이름이 오면 즉시 실패(칸 이름이 SQL에 들어가는 유일한 자리)
+    assert field in FACT_ALL_FIELDS or field == FIELD_NOTE, "정해진 칸 밖 — 저장하지 않는다"
+    row = conn.execute("SELECT * FROM rulebook_facts WHERE fact_id=?", (fact_id,)).fetchone()
+    if row is None:
+        return False
+    old = row[field]
+    if (old or "") == (value or ""):
+        return False
+    conn.execute(f"UPDATE rulebook_facts SET {field}=?, "
+                 "updated_at=datetime('now','localtime') WHERE fact_id=?", (value, fact_id))
+    conn.execute("INSERT INTO rulebook_fact_edits (fact_id, field_name, old_value, new_value) "
+                 "VALUES (?,?,?,?)", (fact_id, field, old, value))
+    conn.commit()
+    return True
+
+
+def fact_stamp(conn, fact_id, status, note=None, set_note=True):
+    """도장(D2 — 항목 통째). 확인 날짜는 '미확인'으로 되돌리면 비운다. 상태·메모 변경도 이력에."""
+    assert status in FACT_STATUSES, "정해진 상태 밖 — 저장하지 않는다"   # 자체검증
+    row = conn.execute("SELECT * FROM rulebook_facts WHERE fact_id=?", (fact_id,)).fetchone()
+    if row is None:
+        return False
+    old = row[FIELD_STATUS]
+    at = None if status == "미확인" else datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if set_note and (row[FIELD_NOTE] or "") != (note or ""):
+        conn.execute("INSERT INTO rulebook_fact_edits (fact_id, field_name, old_value, new_value) "
+                     "VALUES (?,?,?,?)", (fact_id, FIELD_NOTE, row[FIELD_NOTE], note or None))
+        conn.execute("UPDATE rulebook_facts SET review_note=? WHERE fact_id=?",
+                     (note or None, fact_id))
+    if old != status:
+        conn.execute("INSERT INTO rulebook_fact_edits (fact_id, field_name, old_value, new_value) "
+                     "VALUES (?,?,?,?)", (fact_id, FIELD_STATUS, old, status))
+    conn.execute("UPDATE rulebook_facts SET review_status=?, reviewed_at=?, "
+                 "updated_at=datetime('now','localtime') WHERE fact_id=?", (status, at, fact_id))
+    conn.commit()
+    return True
+
+
+def fact_undo(conn, fact_id, field):
+    """되돌리기 — 그 칸의 가장 최근 수정을 이전 값으로. 되돌린 것도 이력에 남는다
+    (그래서 '되돌리기의 되돌리기'가 되고, 확인 대화상자가 필요 없다)."""
+    last = conn.execute(
+        "SELECT old_value FROM rulebook_fact_edits WHERE fact_id=? AND field_name=? "
+        "ORDER BY edit_id DESC LIMIT 1", (fact_id, field)).fetchone()
+    if last is None:
+        return False
+    if field == FIELD_STATUS:
+        return fact_stamp(conn, fact_id, last["old_value"] or "미확인", set_note=False)
+    return fact_save_field(conn, fact_id, field, last["old_value"])
+
 
 def fact_badge(status):
     """상태 배지 — 색만이 아니라 글자로도 구분. 미확인은 회색(잘못이 아니라 '아직 안 봄')."""
@@ -1794,12 +1907,22 @@ def fact_badge(status):
 
 
 def fact_rows(conn):
-    """목록·다음 항목 찾기가 함께 쓰는 한 벌(정렬 포함). '고친 칸'은 값이 바뀐 서로 다른 칸 수."""
-    return conn.execute(
-        "SELECT f.fact_id, f.fact_kind, f.category, f.item_name, f.review_status, f.reviewed_at, "
-        "(SELECT COUNT(DISTINCT e.field_name) FROM rulebook_fact_edits e "
-        " WHERE e.fact_id=f.fact_id) edited_n "
-        "FROM rulebook_facts f " + FACT_ORDER).fetchall()
+    """목록·다음 항목 찾기가 함께 쓰는 한 벌(정렬 포함).
+
+    '고친 칸' = 지금 값이 엑셀에서 온 원래 값과 다른 칸 수. 되돌리면 다시 0이 된다
+    (이력 건수로 세면 되돌린 뒤에도 '고침'이 남아 목록이 사람을 속인다).
+    항목 수십 건 규모라 파이썬에서 비교한다.
+    """
+    rows = conn.execute("SELECT * FROM rulebook_facts " + FACT_ORDER).fetchall()
+    origins = fact_origins(conn)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["edited_n"] = sum(
+            1 for (fid, fld), orig in origins.items()
+            if fid == r["fact_id"] and fld in FACT_ALL_FIELDS and (r[fld] or "") != (orig or ""))
+        out.append(d)
+    return out
 
 
 def _fact_progress(rows):
@@ -1901,8 +2024,56 @@ def render_fact_not_found():
     return page("팩트 항목을 찾을 수 없음", topbar, body)
 
 
-def render_fact(conn, id_raw):
-    """항목 상세 — 한 항목의 모든 칸을 한 열로 펼친다(칸끼리 어긋나는 곳을 사람 눈으로 찾는 화면)."""
+def render_fact_denied():
+    """다른 사이트가 몰래 시킨 저장 등 — 처리하지 않았음을 알린다."""
+    topbar = ("<div class='topbar'><a href='/facts'>← 팩트 목록</a>"
+              "<span class='t-title'>처리하지 않았습니다</span></div>")
+    body = ("<div class='wrap'><div class='state'>이 요청은 처리하지 않았습니다. "
+            "팩트 룰북 화면에서 직접 눌러주세요."
+            "<div style='margin-top:12px'><a href='/facts'>← 팩트 목록</a></div></div></div>")
+    return page("처리하지 않았습니다", topbar, body)
+
+
+def _fact_form(fact_id, action, field=None, inner=""):
+    hidden = (f"<input type='hidden' name='action' value='{action}'>"
+              f"<input type='hidden' name='id' value='{int(fact_id)}'>")
+    if field:
+        hidden += f"<input type='hidden' name='field' value='{esc(field)}'>"
+    return (f"<form class='fedit' method='post' action='{FACT_SAVE_PATH}'>{hidden}{inner}</form>")
+
+
+def _fact_undo_btn(fact_id, field):
+    return _fact_form(fact_id, "undo", field,
+                      "<button class='btn' type='submit'>되돌리기</button>")
+
+
+def _fact_stampbar(row, draft_note=None):
+    """하단 고정 도장 바 — 상태 3개 + 검수 메모(선택). 확인 대화상자 없음(§3-5)."""
+    cur = row["review_status"]
+    btns = "".join(
+        f"<button class='btn{' on' if s == cur else ''}' type='submit' "
+        f"name='status' value='{s}'>{label}</button>"
+        for s, label in (("확인함", "확인함"), ("보류", "보류"), ("미확인", "미확인으로")))
+    note = draft_note if draft_note is not None else (row["review_note"] or "")
+    inner = ("<span>이 항목을 다 읽으셨나요?</span>" + btns
+             + "<details><summary>검수 메모(선택)</summary>"
+             "<p class='help'>왜 보류인지 적어두면 다음에 볼 때 도움이 됩니다 — "
+             "예: 2020년 기준이 맞는지 협회에 확인 필요.</p>"
+             "<label for='note'>검수 메모</label>"
+             f"<textarea id='note' name='note' rows='2'>{esc(note)}</textarea>"
+             "<p class='help'>메모는 [확인함]·[보류]·[미확인으로] 중 하나를 눌러야 함께 "
+             "저장됩니다.</p></details>")
+    return f"<div class='stampbar'>{_fact_form(row['fact_id'], 'stamp', None, inner)}</div>"
+
+
+def render_fact(conn, id_raw, edit=None, done=None, f=None, s=None,
+                draft=None, error=None, draft_note=None):
+    """항목 상세 — 한 항목의 모든 칸을 한 열로 펼친다(칸끼리 어긋나는 곳을 사람 눈으로 찾는 화면).
+
+    edit: 지금 편집 상태인 칸 이름(나머지 칸은 그대로 보인다 — 보면서 고치는 게 이 작업의 본질).
+    done/f/s: 방금 한 저장의 결과 알림(303 재이동 뒤 주소로 넘어온다).
+    draft/error/draft_note: 저장 실패 시 — 고치던 내용을 그대로 되돌려 그린다(입력 내용 안 날림).
+    """
     try:
         fact_id = int(id_raw)   # 입력검증: 정수만
     except (TypeError, ValueError):
@@ -1915,12 +2086,15 @@ def render_fact(conn, id_raw):
         edits = conn.execute(
             "SELECT field_name, edited_at FROM rulebook_fact_edits "
             "WHERE fact_id=? ORDER BY edit_id DESC", (fact_id,)).fetchall()
+        origins = fact_origins(conn, fact_id)
     except sqlite3.Error:
         return _fact_load_failed(nav_menu("facts"), "팩트 룰북")
 
     kind = row["fact_kind"]
     fields = FACT_FIELDS_BY_KIND[kind]   # fact_kind는 창고에서 '공통'/'개별'로 제한됨
     labels = dict(fields)
+    # 입력검증: 편집할 칸은 이 항목의 정해진 칸 목록 안에서만(주소로 다른 칸을 열 수 없다)
+    edit = edit if edit in labels else None
 
     # 다음 미확인 → (D-C: 자동 이동은 안 하고 링크만) — 목록과 같은 순서에서 나보다 뒤인 첫 미확인
     order = [r["fact_id"] for r in all_rows]
@@ -1946,14 +2120,39 @@ def render_fact(conn, id_raw):
 
     panels = []
     for col, label in fields:
-        val = row[col]
-        inner = (f"<div class='ptext'>{esc(val)}</div>" if val and val.strip()
-                 else "<p class='note-empty'>이 칸은 비어 있습니다.</p>")
-        panels.append(f"<div class='panel'><h2 class='sec'>{esc(label)}</h2>{inner}</div>")
+        origin = origins.get((fact_id, col))
+        changed = origin is not None and (row[col] or "") != (origin or "")
+        chip = " <span class='chip mark'>고침</span>" if changed else ""
+        if col == edit:
+            # 이 칸만 입력 상자로. 저장 실패면 고치던 내용(draft)을 그대로 되돌려 넣는다.
+            val = draft if draft is not None else (row[col] or "")
+            err = f"<div class='flash bad'>{esc(error)}</div>" if error else ""
+            inner = err + _fact_form(
+                fact_id, "edit", col,
+                f"<label for='v'>{esc(label)}</label>"
+                f"<textarea id='v' name='value' rows='8'>{esc(val)}</textarea>"
+                "<p class='help'>여기 적은 문장이 그대로 원고에 들어갑니다. 학점·기간 같은 "
+                "수치는 조건(시점·학력)까지 함께 적어주세요.</p>"
+                "<button class='btn go' type='submit'>저장</button> "
+                f"<a class='btn' href='/fact?id={fact_id}'>취소</a>")
+        else:
+            val = row[col]
+            inner = (f"<div class='ptext'>{esc(val)}</div>" if val and val.strip()
+                     else "<p class='note-empty'>이 칸은 비어 있습니다.</p>")
+            inner += ("<p class='fedit' style='margin-top:12px'>"
+                      f"<a class='btn' href='/fact?id={fact_id}&edit={col}'>고치기</a></p>")
+            if changed:   # 엑셀 원본에 닿는 길 — 고친 칸에만, 접어서(훑는 손가락에 안 닿게)
+                inner += ("<details><summary>▸ 엑셀에서 온 원래 값 보기</summary>"
+                          f"<div class='ptext placeholder' style='text-align:left'>"
+                          f"{esc(origin or '(비어 있었음)')}</div>"
+                          f"{_fact_undo_btn(fact_id, col)}</details>")
+        panels.append(f"<div class='panel'><h2 class='sec'>{esc(label)}{chip}</h2>{inner}</div>")
 
-    if edits:   # 지금은 0건이라 아예 안 나온다(4차에서 쌓인다)
+    if edits:
+        def edit_label(name):   # 값 칸이면 칸 이름, 상태·메모면 그 이름
+            return FACT_HISTORY_LABEL.get(name) or labels.get(name) or name
         items = "".join(
-            f"<li><span>{esc(labels.get(e['field_name'], e['field_name']))}</span>"
+            f"<li><span>{esc(edit_label(e['field_name']))}</span>"
             f"<span class='secsub'>{esc((e['edited_at'] or '')[:16])}</span></li>"
             for e in edits)
         history = (f"<details><summary>▸ 수정 이력 {len(edits)}건 보기</summary>"
@@ -1961,13 +2160,26 @@ def render_fact(conn, id_raw):
     else:
         history = ""
 
+    # 방금 한 행동의 결과 한 줄(+ 되돌리기) — 조용히 바뀌는 것이 실수 클릭보다 위험하다
+    flash = ""
+    if error and edit is None:
+        flash = f"<div class='flash bad'>{esc(error)}</div>"
+    elif done in ("edit", "undo") and f in labels:
+        word = "고쳤습니다" if done == "edit" else "되돌렸습니다"
+        flash = (f"<div class='flash'>✓ ‘{esc(labels[f])}’을(를) {word}."
+                 f"{_fact_undo_btn(fact_id, f)}</div>")
+    elif done == "stamp" and s in FACT_STATUSES:
+        flash = (f"<div class='flash'>✓ ‘{esc(s)}’(으)로 바꿨습니다."
+                 f"{_fact_undo_btn(fact_id, FIELD_STATUS)}</div>")
+
     body = ("<div class='wrap'>"
-            f"<h1 class='doc'>{esc(row['item_name'])}</h1>"
+            f"{flash}<h1 class='doc'>{esc(row['item_name'])}</h1>"
             f"<div class='meta'>{' · '.join(meta_bits)}</div>"
             "<p class='intro'>이 항목의 모든 칸을 아래에 한 번에 폈습니다. "
             "칸끼리 말이 어긋나는 곳을 찾는 게 이 화면의 목적입니다.</p>"
             "<p class='intro sub'>(예: 요건은 160시간인데 FAQ는 120시간이라고 적힌 경우)</p>"
-            f"{''.join(panels)}{history}</div>")
+            f"{''.join(panels)}{history}</div>"
+            + _fact_stampbar(row, draft_note))
     return page(f"팩트 — {row['item_name']}", topbar, body)
 
 
@@ -2005,7 +2217,10 @@ def make_handler(db_path):
                     self._send_html(render_facts(
                         conn, qs.get("view", ["all"])[0], qs.get("kind", ["all"])[0]))
                 elif u.path == "/fact":
-                    self._send_html(render_fact(conn, qs.get("id", [None])[0]))
+                    self._send_html(render_fact(
+                        conn, qs.get("id", [None])[0],
+                        edit=qs.get("edit", [None])[0], done=qs.get("done", [None])[0],
+                        f=qs.get("f", [None])[0], s=qs.get("s", [None])[0]))
                 elif u.path == "/data":
                     self._send_html(render_data(conn))
                 elif u.path == "/post":
@@ -2016,6 +2231,131 @@ def make_handler(db_path):
                     self._send_html(render_not_found(), code=404)
             finally:
                 conn.close()
+
+        # ---- 쓰기(4차) — 팩트 화면 한 곳에서만. 다른 주소는 전부 거절 ----
+        def do_POST(self):
+            u = urllib.parse.urlparse(self.path)
+            if u.path != FACT_SAVE_PATH:
+                # 다른 화면들은 여전히 읽기 전용이다(글목록·분석·트렌드·주제검수·데이터)
+                return self.send_error(405, "Method Not Allowed")
+            if not self._from_this_viewer():
+                # 브라우저에 열어둔 다른 사이트가 몰래 저장을 밀어 넣는 것 차단
+                return self._send_html(render_fact_denied(), code=403)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._send_html(render_fact_denied(), code=403)
+            if length <= 0 or length > FACT_POST_MAX:
+                return self._send_html(render_fact_denied(), code=403)
+            form = urllib.parse.parse_qs(
+                self.rfile.read(length).decode("utf-8", "replace"), keep_blank_values=True)
+
+            def one(key):
+                v = form.get(key) or [""]
+                return v[0]
+
+            try:
+                fact_id = int(one("id"))          # 입력검증: 항목 번호는 정수만
+            except ValueError:
+                return self._send_html(render_fact_not_found(), code=404)
+
+            conn = get_connection(db_path)
+            try:
+                # 추출 배치가 같은 창고 파일에 쓰는 중일 수 있다 — 기다렸다 쓴다(선례 bulk_extract)
+                conn.execute("PRAGMA busy_timeout = 60000")
+                row = conn.execute("SELECT * FROM rulebook_facts WHERE fact_id=?",
+                                   (fact_id,)).fetchone()
+                if row is None:
+                    return self._send_html(render_fact_not_found(), code=404)
+                allowed = dict(FACT_FIELDS_BY_KIND[row["fact_kind"]])
+                action = one("action")
+                pats = masking.load_regex_patterns(conn)
+                names = masking.load_staff_names(conn)
+
+                if action == "edit":
+                    field = one("field")
+                    if field not in allowed:      # 입력검증: 정해진 칸 밖은 저장하지 않는다
+                        return self._send_html(render_fact_denied(), code=403)
+                    # ★ 불변 1: 화면에서 들어온 값도 가림을 통과시켜 '가려진 값'으로 저장한다
+                    value, _ = masking.mask_text(one("value").replace("\r\n", "\n"), pats, names)
+                    if len(value) > FACT_VALUE_MAX:
+                        return self._send_html(render_fact(
+                            conn, fact_id, edit=field, draft=value,
+                            error=f"내용이 너무 깁니다(최대 {FACT_VALUE_MAX:,}자). "
+                                  f"지금 {len(value):,}자예요. 줄여서 다시 저장해주세요."))
+                    try:
+                        fact_save_field(conn, fact_id, field, value)
+                    except sqlite3.Error:
+                        # 저장 실패 — 고치던 내용은 화면에 그대로 남긴다(절대 날리지 않는다)
+                        return self._send_html(render_fact(
+                            conn, fact_id, edit=field, draft=value,
+                            error="저장하지 못했습니다. 지금 창고에 다른 작업(글 추출)이 쓰고 "
+                                  "있는 것 같습니다. 잠시 뒤 [저장]을 다시 눌러주세요. "
+                                  "고치던 내용은 아래에 그대로 있습니다."))
+                    return self._see_other(f"/fact?id={fact_id}&done=edit&f={field}")
+
+                if action == "stamp":
+                    status = one("status")
+                    if status not in FACT_STATUSES:
+                        return self._send_html(render_fact_denied(), code=403)
+                    note, _ = masking.mask_text(one("note").replace("\r\n", "\n"), pats, names)
+                    if len(note) > FACT_VALUE_MAX:
+                        return self._send_html(render_fact(
+                            conn, fact_id, draft_note=note,
+                            error=f"검수 메모가 너무 깁니다(최대 {FACT_VALUE_MAX:,}자). "
+                                  f"지금 {len(note):,}자예요. 줄여서 다시 눌러주세요."))
+                    try:
+                        fact_stamp(conn, fact_id, status, note.strip() or None)
+                    except sqlite3.Error:
+                        return self._send_html(render_fact(
+                            conn, fact_id, draft_note=note,
+                            error="저장하지 못했습니다. 지금 창고에 다른 작업(글 추출)이 쓰고 "
+                                  "있는 것 같습니다. 잠시 뒤 다시 눌러주세요. "
+                                  "적어두신 메모는 아래에 그대로 있습니다."))
+                    return self._see_other(
+                        f"/fact?id={fact_id}&done=stamp&s={urllib.parse.quote(status)}")
+
+                if action == "undo":
+                    field = one("field")
+                    if field not in allowed and field != FIELD_STATUS:
+                        return self._send_html(render_fact_denied(), code=403)
+                    try:
+                        fact_undo(conn, fact_id, field)
+                    except sqlite3.Error:
+                        return self._send_html(render_fact(
+                            conn, fact_id,
+                            error="되돌리지 못했습니다. 지금 창고에 다른 작업(글 추출)이 쓰고 "
+                                  "있는 것 같습니다. 잠시 뒤 다시 눌러주세요."))
+                    if field == FIELD_STATUS:
+                        return self._see_other(f"/fact?id={fact_id}")
+                    return self._see_other(f"/fact?id={fact_id}&done=undo&f={field}")
+
+                return self._send_html(render_fact_denied(), code=403)
+            finally:
+                conn.close()
+
+        def _from_this_viewer(self):
+            """이 뷰어 화면에서 직접 누른 저장인지 확인(다른 사이트가 시킨 요청 차단).
+
+            127.0.0.1 바인딩과 함께 쓰는 두 번째 겹 — Host가 이 뷰어여야 하고,
+            요청을 보낸 화면(Origin/Referer)도 같은 뷰어 주소여야 한다.
+            """
+            host = self.headers.get("Host", "")
+            name = host.rsplit(":", 1)[0].strip("[]").lower()
+            if name not in ("127.0.0.1", "localhost", "::1"):
+                return False
+            src = self.headers.get("Origin") or self.headers.get("Referer") or ""
+            if not src:
+                return False        # 출처를 알 수 없는 요청은 처리하지 않는다
+            p = urllib.parse.urlparse(src)
+            return p.scheme in ("http", "https") and p.netloc.lower() == host.lower()
+
+        def _see_other(self, location):
+            """저장 후 주소 재이동(303) — 새로고침으로 같은 저장이 두 번 들어가지 않게."""
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _send_html(self, text, code=200):
             data = text.encode("utf-8")
