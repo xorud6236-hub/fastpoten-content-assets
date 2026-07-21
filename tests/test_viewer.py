@@ -221,16 +221,60 @@ class TestViewerInvariant(unittest.TestCase):
     # ---- 분석 화면 렌더 + 개인정보 누출 0(불변 1·3) ----
     def test_analysis_renders_sections(self):
         h = self._get("/analysis")
-        self.assertIn("참고 신호 분석", h)
+        self.assertIn("주제로 우리 글 찾기", h)              # 화면 제목(메뉴 이름은 '분석' 그대로)
+        self.assertIn("주제별 우리 글", h)                    # 섹션 A
+        self.assertIn("아직 거의 안 쓴 주제", h)              # 섹션 B
+        self.assertIn("담당자별 우리 글", h)                  # 섹션 C
+        # 결론 난 조회수 표들은 지워지지 않고 접기 안에 남아 있다
         self.assertIn("조회수 높은 글", h)
         self.assertIn("키워드별 조회수", h)
-        self.assertIn("담당자별 조회수", h)
         self.assertIn("형식과 조회수, 관계가 있을까?", h)
-        self.assertIn("분석 대상 1건", h)
+        self.assertIn("창고 글 1건", h)
         self.assertIn("1,234", h)                           # 조회수 천단위
         # 불변 3 — 성과로 단정하지 않고 참고 신호로 표기
         self.assertIn("참고 신호", h)
         self.assertNotIn("성과 등급", h)
+
+    def test_analysis_menu_label_stays(self):
+        # 메뉴 이름은 '분석' 그대로(손에 익은 자리) — 바뀌는 건 화면 제목뿐
+        h = self._get("/analysis")
+        self.assertIn(">분석</a>", h)
+
+    def test_analysis_folds_concluded_sections_without_deleting(self):
+        h = self._get("/analysis")
+        self.assertIn("<details class='foldsec'", h)
+        self.assertIn("문단 수·이미지 수·글자 수로는", h)     # 접기 제목의 결론 한 줄
+        self.assertNotIn("<details class='foldsec' open>", h)  # 기본은 접힘
+
+    def test_analysis_topic_and_staff_are_entrances_to_list(self):
+        h = self._get("/analysis")
+        self.assertIn("topic=", h)
+        self.assertIn("staff=", h)
+        self.assertIn("주제·담당자를 누르면 그 조건의 글 목록이 열립니다", h)
+
+    def test_analysis_says_what_it_can_and_cannot_tell(self):
+        # 정직 박스가 화면 맨 위(섹션 A 표보다 먼저)에 온다
+        h = self._get("/analysis")
+        self.assertIn("알 수 있는 것", h)
+        self.assertIn("알 수 없는 것", h)
+        # 순서는 <body> 안에서 잰다 — 화면 위쪽 <style>의 주석에도 같은 말이 들어 있어
+        # 전체 HTML에서 재면 주석을 짚는다(2026-07-21에 실제로 그렇게 헛짚었다).
+        body = h.split("<body>", 1)[1]
+        self.assertLess(body.index("알 수 없는 것"), body.index("주제별 우리 글"))
+
+    def test_analysis_fact_gap_says_facts_are_unreviewed(self):
+        # 섹션 B가 근거로 쓰는 룰북 팩트는 아직 사람이 확인 안 한 AI 초안이라는 사실을 밝힌다
+        h = self._get("/analysis")
+        self.assertIn("AI가 만든 초안이라 아직 사람이 확인하지 않았습니다", h)
+        self.assertIn("건이 ‘미확인’", h)
+        self.assertIn("href='/fact?id=", h)
+
+    def test_analysis_topic_sort_urls_ok(self):
+        for path in ("/analysis?tsort=many", "/analysis?tsort=few", "/analysis?tsort=name",
+                     "/analysis?tsort=%27%20OR%201"):     # 정해진 값 밖은 기본값으로
+            h = self._get(path)
+            self.assertIn("주제별 우리 글", h)
+            self.assertNotIn("OR 1", h)
 
     def test_analysis_no_pii_leak(self):
         h = self._get("/analysis")
@@ -244,7 +288,7 @@ class TestViewerInvariant(unittest.TestCase):
         for path in ("/analysis?sort=views", "/analysis?sort=vpd",
                      "/analysis?min_age=30", "/analysis?sort=vpd&min_age=30"):
             h = self._get(path)
-            self.assertIn("참고 신호 분석", h)
+            self.assertIn("주제로 우리 글 찾기", h)
 
     # ---- 주제별 조회수(정규화) 섹션 + 트렌드 화면(추가분) ----
     def test_analysis_has_topic_section(self):
@@ -920,6 +964,117 @@ class TestFactsScreens(unittest.TestCase):
         after = self.conn.execute(
             "SELECT COUNT(*), SUM(review_status='미확인') FROM rulebook_facts").fetchone()
         self.assertEqual(tuple(before), tuple(after))
+
+
+class TestAnalysisWithoutViewCounts(unittest.TestCase):
+    """분석 탭 역할 전환(6차) — ★ 조회수가 한 건도 없는 창고에서도 쓸모가 있어야 한다.
+
+    글 7건: 주제 '플래너' 5건(본문 3) · 주제 '요양보호사' 2건(본문 0). 참고 신호(조회수) 0건.
+    팩트 2건(둘 다 '미확인') — 하나는 글이 많은 주제, 하나는 글이 0건인 주제."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.conn = db.get_connection(os.path.join(cls.tmp, "noviews.sqlite3"))
+        db.init_db(cls.conn)
+        raw = os.path.join(cls.tmp, "body_raw.txt")
+        _write(raw, "본문")
+        rows = [(1, "플래너 자격증", raw, "담당가"), (2, "플래너 자격증", raw, "담당가"),
+                (3, "플래너비용", raw, "담당나"), (4, "플래너비용", None, "담당나"),
+                (5, "플래너 자격증", None, "담당나"),
+                (6, "요양보호사 자격증", None, "담당가"), (7, "요양보호사 자격증", None, "담당가")]
+        cls.conn.executemany(
+            "INSERT INTO posts (post_id, title, keyword, extraction_status, body_raw_path, "
+            "staff_name) VALUES (?,?,?,'성공(자동추출)',?,?)",
+            [(i, f"글{i}", k, p, s) for i, k, p, s in rows])
+        # 본문을 가져온 3건에만 문단·이미지 — 평균의 분모가 '본문 가져온 글'임을 검증하려고
+        cls.conn.executemany(
+            "INSERT INTO post_paragraphs (post_id, paragraph_no, clean_text) VALUES (?,?,'문단')",
+            [(p, i) for p in (1, 2, 3) for i in range(1, 5)])      # 글마다 4문단
+        cls.conn.executemany(
+            "INSERT INTO post_images (post_id, image_order, local_path) VALUES (?,?,'x.png')",
+            [(p, i) for p in (1, 2, 3) for i in range(1, 3)])      # 글마다 2장
+        cls.conn.executemany(
+            "INSERT INTO rulebook_facts (fact_kind, category, item_name, source_version) "
+            "VALUES ('공통',?,?,'테스트')",
+            [("복지", "플래너"), ("복지", "한번도안쓴자격증")])
+        cls.conn.commit()
+        cls.html = viewer.render_analysis(cls.conn)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_sections_a_b_c_render_without_any_view_count(self):
+        # ★ 역할 전환의 실질 — 조회수 0건이어도 세 섹션이 다 나온다
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM reference_signals").fetchone()["c"], 0)
+        for sec in ("주제별 우리 글", "아직 거의 안 쓴 주제", "담당자별 우리 글"):
+            self.assertIn(sec, self.html)
+        self.assertIn("창고 글 7건", self.html)
+        self.assertNotIn("아직 분석할 글이 없습니다", self.html)   # 예전엔 여기서 화면이 끝났다
+
+    def test_topic_row_counts_and_shape_numbers(self):
+        # 주제 '플래너' = 창고 글 5건, 본문 3건 → 평균 문단 4.0 · 평균 이미지 2.0
+        self.assertIn("<div class='num'>5</div>", self.html)
+        self.assertIn("<div class='num'>4.0</div>", self.html)
+        self.assertIn("<div class='num'>2.0</div>", self.html)
+        # 본문이 하나도 없는 주제는 평균을 지어내지 않는다
+        self.assertIn("<div class='num'>-</div>", self.html)
+        self.assertIn("원고 틀을 잡을 때 쓰는 숫자", self.html)
+
+    def test_topic_and_staff_link_to_filtered_list(self):
+        self.assertIn("href='/?topic=", self.html)
+        self.assertIn("href='/?staff=", self.html)
+
+    def test_topic_numbers_match_the_post_list_screen(self):
+        # 같은 경로(kn.normalize)를 쓰므로 목록 화면이 말하는 창고 글 수와 어긋나지 않는다
+        self.assertIn("창고에 주제 ‘플래너’로 쓴 글은 <b>5건</b>",
+                      viewer.render_list(self.conn, topic="플래너"))
+
+    def test_fact_gap_is_sorted_by_fewest_and_marked_unreviewed(self):
+        # 글이 0건인 팩트 항목이 먼저 오고, 미확인 상태임을 화면이 밝힌다
+        self.assertLess(self.html.index("한번도안쓴자격증"), self.html.index("복지"))
+        self.assertIn("2건 중 <b>2건이 ‘미확인’</b>", self.html)
+        self.assertIn("<span class='badge dim'>미확인</span>", self.html)
+        self.assertNotIn("추천 주제", self.html)         # 점수·추천을 새로 만들지 않는다
+
+    def test_concluded_view_tables_are_folded_not_deleted(self):
+        self.assertIn("<details class='foldsec'", self.html)
+        self.assertIn("조회수를 확보한 글이 아직 없습니다", self.html)
+        self.assertIn("위쪽 표는 조회수 없이도 볼 수 있어요", self.html)
+
+    def test_empty_fact_table_points_to_facts_screen(self):
+        empty = db.get_connection(os.path.join(self.tmp, "nofacts.sqlite3"))
+        db.init_db(empty)
+        try:
+            h = viewer.render_analysis(empty)
+            self.assertIn("아직 창고에 글이 없습니다", h)      # 글도 0건인 창고
+            empty.execute("INSERT INTO posts (post_id, title, keyword) VALUES (1,'글','플래너')")
+            empty.commit()
+            h = viewer.render_analysis(empty)
+            self.assertIn("룰북 팩트가 아직 창고에 없습니다", h)
+            self.assertIn("href='/facts'", h)
+        finally:
+            empty.close()
+
+    def test_analysis_tables_scroll_instead_of_wrapping(self):
+        # 좁은 화면에서 칸이 접히지 않고 표가 가로로 밀린다(사용 피드백 6번 후반)
+        for cls_name in ("an12", "an13", "an14"):
+            self.assertIn(f"class='{cls_name}'", self.html)
+        self.assertEqual(self.html.count("class='tablewrap'"), 3)   # 세 표 모두 감싸짐
+
+    def test_screen_is_read_only(self):
+        before = self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"]
+        viewer.render_analysis(self.conn, tsort="few")
+        viewer.render_analysis(self.conn, tsort="name")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"], before)
+        self.assertNotIn("method='post'", self.html)
+
+    def test_no_pii_leak(self):
+        for bad in (PII_PHONE, PII_NAME, OPENCHAT, PARA_RAW_SENTINEL):
+            self.assertNotIn(bad, self.html)
 
 
 class TestAnalysisMath(unittest.TestCase):

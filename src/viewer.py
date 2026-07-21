@@ -387,6 +387,16 @@ mark.masked { background: var(--note-bg); color: var(--note-ink);
 /* 팩트 룰북 목록 — 항목명·종류·카테고리·상태·고친 칸·확인 날짜 */
 .an11 .listhead, .an11 .listrow { grid-template-columns: 2.4fr 0.7fr 1.2fr 1fr 0.8fr 1fr;
             min-width: 720px; }
+/* 분석(재료 찾기) 표 — 주제별 우리 글 / 아직 거의 안 쓴 주제 / 담당자별 우리 글 */
+.an12 .listhead, .an12 .listrow { grid-template-columns: 2.4fr 0.8fr 1.1fr 1fr 1fr;
+            min-width: 640px; }
+.an13 .listhead, .an13 .listrow { grid-template-columns: 2fr 1.2fr 1fr 0.9fr; min-width: 560px; }
+.an14 .listhead, .an14 .listrow { grid-template-columns: 2fr 0.8fr 1.1fr 1fr; min-width: 520px; }
+/* 결론 난 참고표 접기 — 손가락 크기(44px)와 굵은 글자. 브라우저 기본 details/summary */
+.foldsec { margin-top: 32px; }
+.foldsec > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer;
+            font-size: 16px; font-weight: 700; color: var(--brand); }
+.foldsec > summary + * { margin-top: 12px; }
 /* 주제 검수 — near중복 후보 판단 카드(원본 키워드 함께 보기) */
 .dupcard { background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
            padding: 14px 16px; margin-bottom: 12px; }
@@ -947,66 +957,260 @@ def pager_html(view, sort, page_no, n_pages, cafe="", staff="", topic=""):
 
 
 # ---------------------------------------------------------------------------
-# 화면 C — 분석 (참고 신호 대시보드, 읽기 전용)
+# 화면 C — 분석 (창고에서 원고 재료를 찾는 입구, 읽기 전용)
+#   역할 전환(2026-07-21): '조회수 순위표' → '주제로 우리 글 찾기'.
+#   위 세 섹션(주제·팩트·담당자)은 조회수를 쓰지 않는다 — 조회수가 0건이어도 이 화면은 쓸모가 있다.
+#   결론이 난 조회수 표들은 지우지 않고 아래 접기 안에 그대로 둔다.
 # ---------------------------------------------------------------------------
 SECTION1_TOP = 50   # 섹션1 표에 보일 상위 건수(결정 5)
 SECTION2_TOP = 20   # 섹션2 키워드 상위 N
+TOPIC_TOP = 50      # 섹션 A(주제별 우리 글)에 한 번에 보일 주제 수 — 주제는 1,300종이 넘는다
+FACT_GAP_TOP = 20   # 섹션 B(아직 거의 안 쓴 주제)에 보일 팩트 항목 수
+ANALYSIS_TITLE = "주제로 우리 글 찾기"
+TOPIC_SORTS = ("many", "few", "name")
 
 
-def render_analysis(conn, sort="views", min_age=False):
-    # 입력검증: sort를 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
+def analysis_topic_rows(conn):
+    """주제별 우리 글 — 주제 · 쓴 글 · 조회수 있는 글 · 평균 문단 · 평균 이미지.
+    ★ 조회수가 한 건도 없어도 만들어진다(이 화면 역할 전환의 실질).
+    주제 묶기는 topic_members()·트렌드와 같은 경로(kn.normalize) — 화면끼리 숫자가 어긋날 수 없다.
+    본문 파일은 열지 않는다(문단·이미지는 창고에 든 행 수만 센다)."""
+    rows = conn.execute(
+        "SELECT p.keyword, COUNT(*) n, "
+        "SUM(CASE WHEN p.body_raw_path IS NOT NULL THEN 1 ELSE 0 END) nb, "
+        "SUM(CASE WHEN rs.v IS NOT NULL THEN 1 ELSE 0 END) nv, "
+        "SUM(COALESCE(pp.c, 0)) np, SUM(COALESCE(pi.c, 0)) ni "
+        "FROM posts p "
+        "LEFT JOIN (SELECT post_id, MAX(view_count) v FROM reference_signals "
+        "           WHERE collected_from_sheet=? AND view_count IS NOT NULL "
+        "           GROUP BY post_id) rs ON rs.post_id=p.post_id "
+        "LEFT JOIN (SELECT post_id, COUNT(*) c FROM post_paragraphs GROUP BY post_id) pp "
+        "       ON pp.post_id=p.post_id "
+        "LEFT JOIN (SELECT post_id, COUNT(*) c FROM post_images GROUP BY post_id) pi "
+        "       ON pi.post_id=p.post_id "
+        "WHERE p.keyword IS NOT NULL GROUP BY p.keyword", (AUTO_VIEW_MARK,)).fetchall()
+    agg = {}
+    for r in rows:
+        t = kn.normalize(r["keyword"])
+        if not t:
+            continue
+        a = agg.setdefault(t, dict(topic=t, n=0, nb=0, nv=0, np=0, ni=0))
+        a["n"] += r["n"]
+        a["nb"] += r["nb"] or 0
+        a["nv"] += r["nv"] or 0
+        a["np"] += r["np"] or 0
+        a["ni"] += r["ni"] or 0
+    return list(agg.values())
+
+
+def analysis_staff_rows(conn):
+    """담당자별 우리 글 — 담당자 · 쓴 글 · 조회수 있는 글 · 평균 조회수.
+    조회수가 없어도 '쓴 글'은 나온다. 평균 조회수는 조회수를 확보한 글만의 참고 신호."""
+    rows = conn.execute(
+        "SELECT COALESCE(NULLIF(p.staff_name, ''), '(없음)') s, COUNT(*) n, "
+        "SUM(CASE WHEN rs.v IS NOT NULL THEN 1 ELSE 0 END) nv, "
+        "SUM(COALESCE(rs.v, 0)) sv "
+        "FROM posts p "
+        "LEFT JOIN (SELECT post_id, MAX(view_count) v FROM reference_signals "
+        "           WHERE collected_from_sheet=? AND view_count IS NOT NULL "
+        "           GROUP BY post_id) rs ON rs.post_id=p.post_id "
+        "GROUP BY s ORDER BY n DESC, s", (AUTO_VIEW_MARK,)).fetchall()
+    return [dict(staff=r["s"], n=r["n"], nv=r["nv"] or 0,
+                 avg=((r["sv"] / r["nv"]) if r["nv"] else None)) for r in rows]
+
+
+def fact_gap_rows(conn, topic_n):
+    """룰북 팩트 항목별로 '그 주제로 쓴 글'이 몇 건인지 — 적은 것부터.
+    팩트 항목 이름도 글 키워드와 같은 방법(kn.normalize)으로 묶어 맞춰본다.
+    점수·추천이 아니다 — 글 수가 적다는 사실 하나로만 줄을 세운다."""
+    rows = conn.execute(
+        "SELECT fact_id, item_name, category, review_status FROM rulebook_facts").fetchall()
+    out = []
+    for r in rows:
+        t = kn.normalize(r["item_name"] or "")
+        out.append(dict(fact_id=r["fact_id"], name=r["item_name"] or "(이름 없음)",
+                        cat=r["category"] or "-", status=r["review_status"] or "미확인",
+                        topic=t, n=(topic_n.get(t, 0) if t else 0)))
+    out.sort(key=lambda x: (x["n"], x["name"]))
+    return out
+
+
+def render_analysis(conn, sort="views", min_age=False, tsort="many"):
+    """창고에서 원고 재료를 찾는 입구. 위 세 섹션(주제·팩트·담당자)은 조회수를 쓰지 않고,
+    결론이 난 조회수 표들은 아래 접기 안에 그대로 남는다(지우지 않음)."""
+    # 입력검증: sort·tsort를 링크 href에 되비추므로 안전 리터럴로만 좁힌다(주입 차단)
     sort = "vpd" if sort == "vpd" else "views"
+    tsort = tsort if tsort in TOPIC_SORTS else "many"
     topbar_menu = nav_menu("analysis")
     try:
         recs = analysis_records(conn, datetime.date.today())
+        trows = analysis_topic_rows(conn)
+        srows = analysis_staff_rows(conn)
+        n_posts = conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"]
+        facts = fact_gap_rows(conn, {t["topic"]: t["n"] for t in trows})
     except sqlite3.Error:
         topbar = ("<div class='topbar'>" + topbar_menu
-                  + "<span class='t-title'>참고 신호 분석</span></div>")
+                  + f"<span class='t-title'>{ANALYSIS_TITLE}</span></div>")
         body = ("<div class='wrap'><div class='state'>분석을 불러오지 못했습니다. "
                 "자산창고 파일을 찾을 수 없어요. 자산창고를 먼저 만든 뒤 다시 열어주세요."
                 "</div></div>")
-        return page("참고 신호 분석", topbar, body)
+        return page(ANALYSIS_TITLE, topbar, body)
 
     n_target = len(recs)
     topbar = ("<div class='topbar'>" + topbar_menu
-              + "<span class='t-title'>참고 신호 분석</span>"
-              f"<span class='badge ok'>분석 대상 {n_target}건</span></div>")
+              + f"<span class='t-title'>{ANALYSIS_TITLE}</span>"
+              f"<span class='badge ok'>창고 글 {_comma(n_posts)}건</span></div>")
 
+    if n_posts == 0:
+        body = ("<div class='wrap'><div class='state'>아직 창고에 글이 없습니다. "
+                "글을 넣은 뒤 이 화면을 새로고침하세요.</div></div>")
+        return page(ANALYSIS_TITLE, topbar, body)
+
+    # --- 안내 두 줄 + 정직 박스(화면 맨 위) ---
+    intro = (
+        "<p class='intro'>이 화면은 창고에서 <b>원고 재료를 찾는 입구</b>입니다.</p>"
+        "<p class='intro sub'>주제·담당자를 누르면 그 조건의 글 목록이 열립니다.</p>")
+    pct = (n_target * 100 // n_posts) if n_posts else 0
+    honest_top = (
+        "<div class='honest'>여기 숫자로 <b>알 수 있는 것</b>: 어떤 주제로 몇 편을 썼는지, "
+        "그 주제 글이 보통 몇 문단·몇 장짜리인지, 아직 거의 안 쓴 주제가 무엇인지.<br>"
+        "여기 숫자로 <b>알 수 없는 것</b>: 어떤 글이 잘 됐는지. 카페 조회수는 참고 신호일 뿐이고, "
+        f"조회수가 있는 글도 전체의 {pct}%({_comma(n_target)}건)뿐입니다. 잘 됐는지는 우리 "
+        "홈페이지·워드프레스 실측이 쌓여야 답할 수 있습니다.</div>")
+
+    def on(cond):
+        return " class='on'" if cond else ""
+
+    # --- 섹션 A: 주제별 우리 글(조회수 없이도 나온다) ---
+    # 동률이면 언제나 주제 이름 가나다순 — 열 때마다 순서가 흔들려 보이지 않게(명세 §2-3의 규칙)
+    if tsort == "name":
+        trows.sort(key=lambda t: t["topic"])
+    elif tsort == "few":
+        trows.sort(key=lambda t: (t["n"], t["topic"]))
+    else:
+        trows.sort(key=lambda t: (-t["n"], t["topic"]))
+    a_shown = trows[:TOPIC_TOP]
+
+    def _avg_cell(total, denom):
+        return f"{total / denom:.1f}" if denom else "-"
+    a_head = ("<div class='listhead'><div>주제</div><div class='num'>쓴 글</div>"
+              "<div class='num'>조회수 있는 글</div><div class='num'>평균 문단</div>"
+              "<div class='num'>평균 이미지</div></div>")
+    a_rows = "".join(
+        "<div class='listrow static'>"
+        f"<div>{topic_link(t['topic'])}</div>"
+        f"<div class='num'>{_comma(t['n'])}</div>"
+        f"<div class='num{'' if t['nv'] else ' num-dim'}'>{_comma(t['nv'])}</div>"
+        f"<div class='num'>{_avg_cell(t['np'], t['nb'])}</div>"
+        f"<div class='num'>{_avg_cell(t['ni'], t['nb'])}</div></div>"
+        for t in a_shown)
+    tq = f"&sort={sort}" + ("&min_age=30" if min_age else "")
+    a_sortbar = ("<div class='filters'>정렬: "
+                 f"<a href='/analysis?tsort=many{tq}'{on(tsort == 'many')}>많이 쓴 순</a> · "
+                 f"<a href='/analysis?tsort=few{tq}'{on(tsort == 'few')}>적게 쓴 순</a> · "
+                 f"<a href='/analysis?tsort=name{tq}'{on(tsort == 'name')}>가나다순</a></div>")
+    if a_shown:
+        a_table = f"<div class='an12'><div class='tablewrap'>{a_head}{a_rows}</div></div>"
+    else:
+        a_table = ("<div class='state'>주제로 묶을 글이 아직 없습니다. "
+                   "글에 키워드가 적혀 있어야 주제로 묶입니다.</div>")
+    secA = ("<h2 class='sec'>주제별 우리 글</h2>"
+            "<p class='intro sub'>비슷한 키워드를 하나의 주제로 묶어 센 것입니다. "
+            f"‘쓴 글’은 창고에 든 글 수예요. 주제 {_comma(len(trows))}개 중 "
+            f"{_comma(len(a_shown))}개가 보입니다.</p>"
+            f"{a_sortbar}{a_table}"
+            "<p class='intro sub'>‘평균 문단·이미지’는 그 주제 글이 보통 어떻게 생겼는지입니다"
+            "(본문을 가져온 글만으로 계산). 잘 된 글의 기준이 아니라 원고 틀을 잡을 때 쓰는 "
+            "숫자예요.</p>")
+
+    # --- 섹션 B: 아직 거의 안 쓴 주제(룰북 팩트 기준) ---
+    if facts:
+        n_un = sum(1 for f in facts if f["status"] == "미확인")
+        b_head = ("<div class='listhead'><div>팩트 항목</div><div>카테고리</div>"
+                  "<div class='num'>그 주제로 쓴 글</div><div>팩트 보기</div></div>")
+        b_rows = []
+        for f in facts[:FACT_GAP_TOP]:
+            cnt = (f"<a href='{list_href(topic=f['topic'])}'>{_comma(f['n'])}건</a>"
+                   if f["topic"] and f["n"] else f"{_comma(f['n'])}건")
+            b_rows.append(
+                "<div class='listrow static'>"
+                f"<div><a class='r-title' href='/fact?id={f['fact_id']}'>{esc(f['name'])}</a> "
+                f"{fact_badge(f['status'])}</div>"
+                f"<div>{esc(f['cat'])}</div>"
+                f"<div class='num'>{cnt}</div>"
+                f"<div><a href='/fact?id={f['fact_id']}'>팩트 보기 →</a></div></div>")
+        secB = ("<h2 class='sec'>아직 거의 안 쓴 주제</h2>"
+                f"<p class='intro sub'>룰북 팩트에 정리해 둔 {_comma(len(facts))}개 항목 중, "
+                f"그 이름으로 쓴 글이 적은 것부터 {_comma(min(len(facts), FACT_GAP_TOP))}개입니다. "
+                "팩트 항목 이름과 글 키워드가 서로 다른 말이면 실제보다 적게 잡힐 수 있어요 — "
+                "0건으로 보이면 글 목록에서 직접 찾아보고 판단해 주세요.</p>"
+                f"<div class='honest'>룰북 팩트는 AI가 만든 초안이라 아직 사람이 확인하지 "
+                f"않았습니다 — {_comma(len(facts))}건 중 <b>{_comma(n_un)}건이 ‘미확인’</b>입니다. "
+                "여기 이름을 보고 원고를 쓰기 전에 팩트 화면에서 내용을 먼저 확인하세요.</div>"
+                f"<div class='an13'><div class='tablewrap'>{b_head}{''.join(b_rows)}</div></div>")
+    else:
+        secB = ("<h2 class='sec'>아직 거의 안 쓴 주제</h2>"
+                "<div class='state'>룰북 팩트가 아직 창고에 없습니다. 팩트를 넣으면 여기서 "
+                "‘아직 안 쓴 주제’를 볼 수 있어요."
+                "<div style='margin-top:12px'><a href='/facts'>팩트 룰북 →</a></div></div>")
+
+    # --- 섹션 C: 담당자별 우리 글(쓴 글 + 평균 조회수) ---
+    c_head = ("<div class='listhead'><div>담당자</div><div class='num'>쓴 글</div>"
+              "<div class='num'>조회수 있는 글</div><div class='num'>평균 조회수</div></div>")
+    c_rows = "".join(
+        "<div class='listrow static'>"
+        f"<div>{staff_link(s['staff'])}</div>"
+        f"<div class='num'>{_comma(s['n'])}</div>"
+        f"<div class='num{'' if s['nv'] else ' num-dim'}'>{_comma(s['nv'])}</div>"
+        + (f"<div class='num'>{_comma(round(s['avg']))}</div>" if s["avg"] is not None
+           else "<div class='num num-dim'>-</div>")
+        + "</div>"
+        for s in srows)
+    secC = ("<h2 class='sec'>담당자별 우리 글<span class='secsub'>쓴 글 많은 순</span></h2>"
+            "<p class='intro sub'>담당자 이름을 누르면 그 담당자가 쓴 글 목록이 열립니다. "
+            "‘평균 조회수’는 조회수를 확보한 글만으로 낸 참고 신호예요 — 사람을 견주는 "
+            "숫자가 아닙니다.</p>"
+            f"<div class='an14'><div class='tablewrap'>{c_head}{c_rows}</div></div>")
+
+    upper = f"<div class='wrap'>{intro}{honest_top}{secA}" \
+            f"<div style='margin-top:32px'>{secB}</div>" \
+            f"<div style='margin-top:32px'>{secC}</div>"
+    fold_open = " open" if (sort != "views" or min_age) else ""
+    fold_head = ("<details class='foldsec'" + fold_open + ">"
+                 "<summary>▸ 조회수로 본 참고 신호 — 결론: 문단 수·이미지 수·글자 수로는 "
+                 "많이 본 글과 아닌 글이 갈리지 않았습니다. 조회수 표는 여기 접어 두었어요."
+                 "</summary>")
+
+    # 접기 안 — 조회수가 없으면 표 대신 안내만(위쪽 세 섹션은 그대로 보인다)
     if n_target == 0:
-        body = ("<div class='wrap'><div class='state'>아직 분석할 글이 없습니다. "
-                "글을 추출해서 조회수를 확보한 뒤 이 화면을 새로고침하세요.</div></div>")
-        return page("참고 신호 분석", topbar, body)
+        return page(ANALYSIS_TITLE, topbar,
+                    upper + fold_head
+                    + "<div class='state'>조회수를 확보한 글이 아직 없습니다. "
+                      "글을 추출하면 여기 표가 생깁니다. 위쪽 표는 조회수 없이도 볼 수 있어요."
+                      "</div></details></div>")
 
     # 30일+ 필터: 켜면 경과일<30(또는 작성일 불명) 글 제외
     used = [r for r in recs if r["dg"] is not None and r["dg"] >= 30] if min_age else recs
 
-    # --- 안내 두 줄 ---
-    intro = (
-        "<p class='intro'>추출된 우리 카페 글의 조회수(참고 신호)로 "
-        "\"어떤 주제·누가 많이 읽혔나\"를 봅니다.</p>"
-        "<p class='intro sub'>조회수는 성과가 아니라 참고 신호입니다. "
-        "카페 순위는 실제 조회수와 거의 맞지 않아 이 화면에서 뺐습니다.</p>")
-
     # --- 조절 바(주소 링크로만, JS 없음) ---
-    def on(cond):
-        return " class='on'" if cond else ""
     ageq = "&min_age=30" if min_age else ""
+    tsq = f"&tsort={tsort}" if tsort != "many" else ""
     controls = (
         "<div class='filters'>정렬: "
-        f"<a href='/analysis?sort=views{ageq}'{on(sort=='views')}>조회수 순</a> · "
-        f"<a href='/analysis?sort=vpd{ageq}'{on(sort=='vpd')}>하루당 조회수 순</a>"
+        f"<a href='/analysis?sort=views{ageq}{tsq}'{on(sort=='views')}>조회수 순</a> · "
+        f"<a href='/analysis?sort=vpd{ageq}{tsq}'{on(sort=='vpd')}>하루당 조회수 순</a>"
         "&nbsp;&nbsp;|&nbsp;&nbsp;기간: "
-        f"<a href='/analysis?sort={sort}'{on(not min_age)}>전체</a> · "
-        f"<a href='/analysis?sort={sort}&min_age=30'{on(min_age)}>올린 지 30일 지난 글만</a>"
+        f"<a href='/analysis?sort={sort}{tsq}'{on(not min_age)}>전체</a> · "
+        f"<a href='/analysis?sort={sort}&min_age=30{tsq}'{on(min_age)}>올린 지 30일 지난 글만</a>"
         "<div class='note'>하루당 조회수는 최근에 올린 글이 높게 나오는 경향이 있어요"
         "(조회가 초반에 몰림). 오래된 글과 견줄 땐 '조회수 순'도 함께 보세요.</div></div>")
 
     # 30일+ 필터가 전부 걸러낸 경우(빈 집합) — 평균 계산 크래시 방지, 안내만
     if not used:
-        body = (f"<div class='wrap'>{intro}{controls}"
-                "<div class='state'>고른 조건(올린 지 30일 지난 글)에 맞는 글이 없습니다. "
-                "‘전체’로 바꾸면 모든 글을 볼 수 있어요.</div></div>")
-        return page("참고 신호 분석", topbar, body)
+        return page(ANALYSIS_TITLE, topbar,
+                    upper + fold_head + controls
+                    + "<div class='state'>고른 조건(올린 지 30일 지난 글)에 맞는 글이 없습니다. "
+                      "‘전체’로 바꾸면 모든 글을 볼 수 있어요.</div></details></div>")
 
     # --- 섹션 1: 글별 조회수 ---
     if sort == "vpd":
@@ -1114,23 +1318,8 @@ def render_analysis(conn, sort="views", min_age=False):
         sec2 = ("<h2 class='sec'>키워드별 조회수</h2><div class='state'>"
                 "아직 여러 번 쓴 키워드가 없어 키워드별 비교를 만들 수 없습니다.</div>")
 
-    # --- 섹션 3: 담당자별 조회수 ---
-    gs = defaultdict(list)
-    for r in used:
-        gs[r["staff"] or "(없음)"].append(r)
-    sstats = sorted(
-        ((s, len(g), statistics.mean(x["v"] for x in g)) for s, g in gs.items()),
-        key=lambda x: x[2], reverse=True)
-    s_head = ("<div class='listhead'><div>담당자</div><div class='num'>글 수</div>"
-              "<div class='num'>평균 조회수</div></div>")
-    s_rows = "".join(
-        "<div class='listrow static'>"
-        f"<div>{staff_link(s)}</div><div class='num'>{n}</div>"
-        f"<div class='num'>{_comma(round(av))}</div></div>"
-        for s, n, av in sstats)
-    sec3 = ("<h2 class='sec'>담당자별 조회수<span class='secsub'>평균 조회수 높은 순</span></h2>"
-            "<p class='intro sub'>담당자 이름을 누르면 그 담당자가 쓴 글 목록이 열립니다.</p>"
-            f"<div class='an3'><div class='tablewrap'>{s_head}{s_rows}</div></div>")
+    # 담당자별 평균 조회수는 접기 안으로 내리지 않고 섹션 C(담당자별 우리 글)에 열로 살아 있다
+    # (사용자 결정 2026-07-21: 펼쳐 둔다). 같은 표를 두 번 그리지 않으려고 여기서는 다시 만들지 않는다.
 
     # --- 섹션 4: 형식과 조회수의 관계(정직 섹션) ---
     vs = [r["v"] for r in used]
@@ -1167,12 +1356,11 @@ def render_analysis(conn, sort="views", min_age=False):
             f"<div class='an4'><div class='tablewrap' style='margin-top:12px'>"
             f"{cmp_head}{cmp_rows}</div></div>{honest}")
 
-    body = (f"<div class='wrap'>{intro}{controls}{sec1}"
-            f"<div style='margin-top:32px'>{sect}</div>"
-            f"<div style='margin-top:32px'>{sec2}</div>"
-            f"<div style='margin-top:32px'>{sec3}</div>"
-            f"<div style='margin-top:32px'>{sec4}</div></div>")
-    return page("참고 신호 분석", topbar, body)
+    body = (upper + fold_head + controls + sec1
+            + f"<div style='margin-top:32px'>{sect}</div>"
+            + f"<div style='margin-top:32px'>{sec2}</div>"
+            + f"<div style='margin-top:32px'>{sec4}</div></details></div>")
+    return page(ANALYSIS_TITLE, topbar, body)
 
 
 # ---------------------------------------------------------------------------
@@ -1769,7 +1957,8 @@ def make_handler(db_path):
                 elif u.path == "/analysis":
                     self._send_html(render_analysis(
                         conn, qs.get("sort", ["views"])[0],
-                        qs.get("min_age", [None])[0] == "30"))
+                        qs.get("min_age", [None])[0] == "30",
+                        qs.get("tsort", ["many"])[0]))
                 elif u.path == "/trends":
                     self._send_html(render_trends(conn))
                 elif u.path == "/topics":
